@@ -18,6 +18,6 @@ export type DecrementResponse = {
 };
 export type createPostType = {
   type: 'post';
-  success: Boolean;
+  success: boolean;
   postId: string;
 };

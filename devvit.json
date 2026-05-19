@@ -11,7 +11,9 @@
       "game": {
         "entry": "game.html"
       },
-      "rusil": { "entry": "rusil.html" }
+      "rusil": {
+        "entry": "rusil.html"
+      }
     }
   },
   "server": {
@@ -21,26 +23,19 @@
   "menu": {
     "items": [
       {
-        "label": "Create a new post",
-        "description": "modecule",
+        "label": "Open SIQ Dashboard",
+        "description": "Create a smart moderation dashboard post",
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/post-create"
-      },
-      {
-        "label": "Example form",
-        "description": "Show a simple form",
-        "location": "subreddit",
-        "forUserType": "moderator",
-        "endpoint": "/internal/menu/example-form"
       }
     ]
   },
-  "forms": {
-    "exampleForm": "/internal/form/example-submit"
-  },
   "triggers": {
-    "onAppInstall": "/internal/triggers/on-app-install"
+    "onAppInstall": "/internal/triggers/on-app-install",
+    "onPostCreate": "/internal/triggers/on-post-create",
+    "onCommentCreate": "/internal/triggers/on-comment-create",
+    "onPostReport": "/internal/triggers/on-post-report"
   },
   "scripts": {
     "dev": "vite build --watch",
