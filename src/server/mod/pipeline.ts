@@ -1,100 +1,98 @@
 import { reddit } from '@devvit/web/server';
-import type { EnqueuePayload, QueueItem } from '../../shared/mod';
-import { scoreItem } from './scoring';
+import type { ActionRequest, ScoreContentRequest, ScoreRecord } from '../../shared/mod';
+import { scoreWithGemini } from './llm';
 import {
-  getRules,
-  incrementPriorFlags,
-  logAudit,
-  putQueueItem,
-  readItem,
+  incrementActionStats,
+  markReportedPostProcessed,
+  readRules,
+  readScoreRecord,
   removeFromQueue,
-  setItem,
+  writeAuditEntry,
+  writeScoreRecord,
 } from './store';
 
-const toThingId = (id: string, kind: 'post' | 'comment'): `t1_${string}` | `t3_${string}` => {
-  if (id.startsWith('t1_') || id.startsWith('t3_')) {
-    return id as `t1_${string}` | `t3_${string}`;
+const toThingId = (id: string): `t3_${string}` => {
+  if (id.startsWith('t3_')) {
+    return id as `t3_${string}`;
   }
-  return (kind === 'comment' ? `t1_${id}` : `t3_${id}`) as `t1_${string}` | `t3_${string}`;
+  return `t3_${id}`;
 };
 
-const maybeApprove = async (itemId: string, kind: 'post' | 'comment'): Promise<void> => {
+const removePost = async (tid: `t3_${string}`): Promise<void> => {
   try {
-    await reddit.approve(toThingId(itemId, kind));
+    await reddit.remove(tid, false);
+    return;
   } catch {
-    // no-op when unavailable in local mocks
+    await reddit.remove(tid, true);
   }
 };
 
-const maybeRemove = async (itemId: string, kind: 'post' | 'comment'): Promise<void> => {
-  try {
-    await reddit.remove(toThingId(itemId, kind), true);
-  } catch {
-    // no-op when unavailable in local mocks
-  }
-};
+export const scoreContent = async (
+  subredditId: string,
+  payload: ScoreContentRequest
+): Promise<ScoreRecord> => {
+  const rules = await readRules(subredditId);
+  const modelResult = await scoreWithGemini(payload, rules);
+  const record: ScoreRecord = {
+    ...payload,
+    subredditId,
+    score: modelResult.score,
+    label: modelResult.label,
+    reasons: modelResult.reasons,
+    suggested_action: modelResult.suggested_action,
+    createdAt: Date.now(),
+  };
 
-export const ingestAndScore = async (payload: EnqueuePayload): Promise<QueueItem> => {
-  const rules = await getRules(payload.subredditId);
-  const item = await scoreItem(payload, rules.regexRules);
-
-  if (item.riskScore >= rules.autoRemoveThreshold) {
-    await maybeRemove(item.itemId, item.contentKind);
-    item.status = 'auto_removed';
-    item.modAction = 'remove';
-    await incrementPriorFlags(item.subredditId, item.authorId);
-  } else if (item.riskScore <= rules.autoApproveThreshold) {
-    await maybeApprove(item.itemId, item.contentKind);
-    item.status = 'auto_approved';
-    item.modAction = 'approve';
-  }
-
-  await putQueueItem(item);
-  await logAudit(item.subredditId, {
-    type: 'ingest',
-    itemId: item.itemId,
-    riskScore: String(item.riskScore),
-    status: item.status,
-    ts: String(Date.now()),
+  await writeScoreRecord(record);
+  await writeAuditEntry({
+    postId: record.postId,
+    subredditId,
+    action: 'score',
+    modId: 'system',
+    timestamp: Date.now(),
+    score: record.score,
+    reasons: record.reasons,
+    postTitle: record.title,
   });
 
-  return item;
+  return record;
 };
 
-export const applyManualAction = async (
-  subredditId: string,
-  itemId: string,
-  action: 'approve' | 'remove',
-  modId: string
-): Promise<boolean> => {
-  const item = await readItem(subredditId, itemId);
-  if (!item) {
-    return false;
+export const applyAction = async (
+  input: ActionRequest,
+  action: 'approve' | 'remove'
+): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const score = await readScoreRecord(input.subredditId, input.postId);
+    const tid = toThingId(input.postId);
+
+    if (action === 'approve') {
+      await reddit.approve(tid);
+    } else {
+      await removePost(tid);
+    }
+
+    await Promise.all([
+      removeFromQueue(input.subredditId, input.postId),
+      markReportedPostProcessed(input.subredditId, input.postId, action),
+      incrementActionStats(input.subredditId, action),
+      writeAuditEntry({
+        postId: input.postId,
+        subredditId: input.subredditId,
+        action,
+        modId: input.modId,
+        timestamp: Date.now(),
+        score: score?.score ?? 0.5,
+        reasons: score?.reasons ?? [input.reason],
+        postTitle: score?.title ?? input.postId,
+      }),
+    ]);
+
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'unknown_error',
+    };
   }
-
-  if (action === 'approve') {
-    await maybeApprove(itemId, item.contentKind);
-  } else {
-    await maybeRemove(itemId, item.contentKind);
-    await incrementPriorFlags(item.subredditId, item.authorId);
-  }
-
-  item.status = 'reviewed';
-  item.modAction = action;
-  item.claimedBy = modId;
-  item.claimedAt = Date.now();
-
-  await Promise.all([
-    setItem(item),
-    removeFromQueue(subredditId, itemId),
-    logAudit(subredditId, {
-      type: 'manual_action',
-      itemId,
-      action,
-      modId,
-      ts: String(Date.now()),
-    }),
-  ]);
-
-  return true;
 };

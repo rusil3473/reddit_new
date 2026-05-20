@@ -1,151 +1,427 @@
 import { redis } from '@devvit/web/server';
-import type { QueueItem, RuleConfig } from '../../shared/mod';
+import type { AuditEntry, ModerationRules, QueueItem, ReportMeta, ScoreRecord, SummaryStats } from '../../shared/mod';
 
-const defaultRules: RuleConfig = {
-  autoApproveThreshold: 0.1,
-  autoRemoveThreshold: 0.9,
-  regexRules: ['free\\s+money', 'guaranteed\\s+profit', 'buy\\s+followers'],
-};
-
+const scoreKey = (subredditId: string, postId: string) => `score:${subredditId}:${postId}`;
 const queueKey = (subredditId: string) => `queue:${subredditId}`;
-const scoreKey = (subredditId: string, itemId: string) => `score:${subredditId}:${itemId}`;
-const claimKey = (subredditId: string, itemId: string) => `claim:${subredditId}:${itemId}`;
+const reportMetaKey = (subredditId: string, postId: string) => `report_meta:${subredditId}:${postId}`;
+const reportCountKey = (subredditId: string, postId: string) => `reports:${subredditId}:${postId}`;
+const reportedPostsKey = (subredditId: string) => `reported_posts:${subredditId}`;
 const auditKey = (subredditId: string) => `audit:${subredditId}`;
+const statsKey = (subredditId: string, metric: string) => `stats:${subredditId}:${metric}`;
 const rulesKey = (subredditId: string) => `rules:${subredditId}`;
-const priorFlagsKey = (subredditId: string, authorId: string) => `prior_flags:${subredditId}:${authorId}`;
 
-const readQueueIds = async (subredditId: string): Promise<string[]> => {
-  const raw = await redis.get(queueKey(subredditId));
+const parseNumber = (value: string | undefined, fallback = 0): number => {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+const requiredString = (value: string | undefined, fallback = ''): string => value ?? fallback;
+
+const parseJsonList = <T>(raw: string | null): T[] => {
   if (!raw) {
     return [];
   }
-
   try {
-    return JSON.parse(raw) as string[];
+    return JSON.parse(raw) as T[];
   } catch {
     return [];
   }
 };
 
-const writeQueueIds = async (subredditId: string, ids: string[]): Promise<void> => {
-  await redis.set(queueKey(subredditId), JSON.stringify(ids));
+const writeJsonList = async <T>(key: string, items: T[]): Promise<void> => {
+  await redis.set(key, JSON.stringify(items));
 };
 
-export const getRules = async (subredditId: string): Promise<RuleConfig> => {
-  const stored = await redis.get(rulesKey(subredditId));
-  if (!stored) {
+const defaultRules: ModerationRules = {
+  autoApproveThreshold: 0.15,
+  autoRemoveThreshold: 0.85,
+  communityRules: ['Rule 1: No spam', 'Rule 2: No harassment'],
+};
+
+const isWrongTypeError = (error: unknown): boolean => {
+  return error instanceof Error && error.message.includes('WRONGTYPE');
+};
+
+const ensureQueueZSet = async (subredditId: string): Promise<void> => {
+  const key = queueKey(subredditId);
+  const currentType = await redis.type(key);
+  if (currentType === 'none' || currentType === 'zset') {
+    return;
+  }
+
+  if (currentType === 'string') {
+    const raw = await redis.get(key);
+    const legacyIds = parseJsonList<string>(raw ?? null);
+    await redis.del(key);
+
+    if (legacyIds.length > 0) {
+      const scoreHashes = await Promise.all(
+        legacyIds.map((postId) => redis.hGetAll(scoreKey(subredditId, postId)))
+      );
+      const members = legacyIds.map((postId, idx) => ({
+        member: postId,
+        score: parseNumber(scoreHashes[idx]?.score, 0.5),
+      }));
+      if (members.length > 0) {
+        await redis.zAdd(key, ...members);
+      }
+    }
+    return;
+  }
+
+  await redis.del(key);
+};
+
+const queueZAdd = async (
+  subredditId: string,
+  member: { member: string; score: number }
+): Promise<void> => {
+  const key = queueKey(subredditId);
+  try {
+    await redis.zAdd(key, member);
+  } catch (error) {
+    if (!isWrongTypeError(error)) {
+      throw error;
+    }
+    await ensureQueueZSet(subredditId);
+    await redis.zAdd(key, member);
+  }
+};
+
+const queueZRange = async (
+  subredditId: string,
+  limit: number
+): Promise<Array<{ member: string; score: number }>> => {
+  const key = queueKey(subredditId);
+  try {
+    return await redis.zRange(key, 0, Math.max(0, limit - 1), {
+      by: 'rank',
+      reverse: true,
+    });
+  } catch (error) {
+    if (!isWrongTypeError(error)) {
+      throw error;
+    }
+    await ensureQueueZSet(subredditId);
+    return redis.zRange(key, 0, Math.max(0, limit - 1), {
+      by: 'rank',
+      reverse: true,
+    });
+  }
+};
+
+const queueZCard = async (subredditId: string): Promise<number> => {
+  const key = queueKey(subredditId);
+  try {
+    return await redis.zCard(key);
+  } catch (error) {
+    if (!isWrongTypeError(error)) {
+      throw error;
+    }
+    await ensureQueueZSet(subredditId);
+    return redis.zCard(key);
+  }
+};
+
+const queueZRem = async (subredditId: string, postId: string): Promise<void> => {
+  const key = queueKey(subredditId);
+  try {
+    await redis.zRem(key, [postId]);
+  } catch (error) {
+    if (!isWrongTypeError(error)) {
+      throw error;
+    }
+    await ensureQueueZSet(subredditId);
+    await redis.zRem(key, [postId]);
+  }
+};
+
+export const writeScoreRecord = async (record: ScoreRecord): Promise<void> => {
+  const key = scoreKey(record.subredditId, record.postId);
+  const existing = await redis.hGet(key, 'postId');
+  await redis.hSet(key, {
+    postId: record.postId,
+    subredditId: record.subredditId,
+    title: record.title,
+    body: record.body,
+    authorName: record.authorName,
+    accountAgeDays: String(record.accountAgeDays),
+    karma: String(record.karma),
+    reportCount: String(record.reportCount),
+    priorFlagsInSub: String(record.priorFlagsInSub),
+    score: String(record.score),
+    label: record.label,
+    reasons: JSON.stringify(record.reasons),
+    suggested_action: record.suggested_action,
+    createdAt: String(record.createdAt),
+  });
+
+  await queueZAdd(record.subredditId, {
+    member: record.postId,
+    score: record.score,
+  });
+
+  if (!existing) {
+    await redis.incrBy(statsKey(record.subredditId, 'total'), 1);
+  }
+};
+
+export const readScoreRecord = async (
+  subredditId: string,
+  postId: string
+): Promise<ScoreRecord | undefined> => {
+  const raw = await redis.hGetAll(scoreKey(subredditId, postId));
+  if (!raw.postId) {
+    return undefined;
+  }
+
+  return {
+    postId: requiredString(raw.postId),
+    subredditId: requiredString(raw.subredditId),
+    title: requiredString(raw.title),
+    body: requiredString(raw.body),
+    authorName: requiredString(raw.authorName),
+    accountAgeDays: parseNumber(raw.accountAgeDays),
+    karma: parseNumber(raw.karma),
+    reportCount: parseNumber(raw.reportCount),
+    priorFlagsInSub: parseNumber(raw.priorFlagsInSub),
+    score: parseNumber(raw.score, 0.5),
+    label: (raw.label as ScoreRecord['label']) ?? 'borderline',
+    reasons: parseJsonList<string>(raw.reasons ?? null),
+    suggested_action: (raw.suggested_action as ScoreRecord['suggested_action']) ?? 'review',
+    createdAt: parseNumber(raw.createdAt, Date.now()),
+  };
+};
+
+const readReportedPostIds = async (subredditId: string): Promise<string[]> => {
+  return parseJsonList<string>((await redis.get(reportedPostsKey(subredditId))) ?? null);
+};
+
+const writeReportedPostIds = async (subredditId: string, postIds: string[]): Promise<void> => {
+  await writeJsonList(reportedPostsKey(subredditId), postIds);
+};
+
+export const addReportedPost = async (subredditId: string, postId: string): Promise<void> => {
+  const items = await readReportedPostIds(subredditId);
+  if (!items.includes(postId)) {
+    items.push(postId);
+    await writeReportedPostIds(subredditId, items);
+  }
+};
+
+export const incrementReportAndMeta = async (input: {
+  subredditId: string;
+  postId: string;
+  title: string;
+  authorName: string;
+}): Promise<ReportMeta> => {
+  const reportCount = await redis.incrBy(reportCountKey(input.subredditId, input.postId), 1);
+  const key = reportMetaKey(input.subredditId, input.postId);
+  const existing = await redis.hGetAll(key);
+  const now = Date.now();
+  const firstReportedAt = existing.firstReportedAt
+    ? parseNumber(existing.firstReportedAt)
+    : now;
+
+  await redis.hSet(key, {
+    postId: input.postId,
+    subredditId: input.subredditId,
+    title: input.title,
+    authorName: input.authorName,
+    firstReportedAt: String(firstReportedAt),
+    lastReportedAt: String(now),
+    reportCount: String(reportCount),
+    status: 'active',
+  });
+
+  await addReportedPost(input.subredditId, input.postId);
+
+  return {
+    postId: input.postId,
+    subredditId: input.subredditId,
+    title: input.title,
+    authorName: input.authorName,
+    firstReportedAt,
+    lastReportedAt: now,
+    reportCount,
+    status: 'active',
+  };
+};
+
+export const readReportMeta = async (
+  subredditId: string,
+  postId: string
+): Promise<ReportMeta | undefined> => {
+  const raw = await redis.hGetAll(reportMetaKey(subredditId, postId));
+  if (!raw.postId) {
+    return undefined;
+  }
+  return {
+    postId: requiredString(raw.postId),
+    subredditId: requiredString(raw.subredditId),
+    title: requiredString(raw.title),
+    authorName: requiredString(raw.authorName),
+    firstReportedAt: parseNumber(raw.firstReportedAt),
+    lastReportedAt: parseNumber(raw.lastReportedAt),
+    reportCount: parseNumber(raw.reportCount),
+    status: raw.status === 'processed' ? 'processed' : 'active',
+    processedAt: raw.processedAt ? parseNumber(raw.processedAt) : undefined,
+    processedAction:
+      raw.processedAction === 'approve' || raw.processedAction === 'remove'
+        ? raw.processedAction
+        : undefined,
+  };
+};
+
+export const readReportedPosts = async (
+  subredditId: string,
+  status: 'active' | 'processed' | 'all' = 'active'
+): Promise<ReportMeta[]> => {
+  const ids = await readReportedPostIds(subredditId);
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const metas = await Promise.all(ids.map((postId) => readReportMeta(subredditId, postId)));
+  const all = metas.filter((meta): meta is ReportMeta => Boolean(meta));
+  if (status === 'all') {
+    return all;
+  }
+  return all.filter((meta) => meta.status === status);
+};
+
+export const markReportedPostProcessed = async (
+  subredditId: string,
+  postId: string,
+  action: 'approve' | 'remove'
+): Promise<void> => {
+  const key = reportMetaKey(subredditId, postId);
+  const existing = await redis.hGetAll(key);
+  if (!existing.postId) {
+    return;
+  }
+  await redis.hSet(key, {
+    ...existing,
+    status: 'processed',
+    processedAt: String(Date.now()),
+    processedAction: action,
+  });
+};
+
+export const readQueueItems = async (
+  subredditId: string,
+  limit: number,
+  offset = 0
+): Promise<QueueItem[]> => {
+  const ranked = await queueZRange(subredditId, limit + offset);
+
+  const postIds = ranked.slice(offset, offset + limit).map((entry) => entry.member);
+  if (postIds.length === 0) {
+    return [];
+  }
+
+  const scoreHashes = await Promise.all(postIds.map((postId) => redis.hGetAll(scoreKey(subredditId, postId))));
+
+  return scoreHashes
+    .filter((raw) => raw.postId)
+    .map((raw) => ({
+      postId: requiredString(raw.postId),
+      subredditId: requiredString(raw.subredditId),
+      title: requiredString(raw.title),
+      authorName: requiredString(raw.authorName),
+      reportCount: parseNumber(raw.reportCount),
+      score: parseNumber(raw.score),
+      label: (raw.label as QueueItem['label']) ?? 'borderline',
+      reasons: parseJsonList<string>(raw.reasons ?? null),
+      suggested_action: (raw.suggested_action as QueueItem['suggested_action']) ?? 'review',
+      claimedBy: raw.claimedBy,
+    }));
+};
+
+export const writeAuditEntry = async (entry: AuditEntry): Promise<void> => {
+  const existing = parseJsonList<AuditEntry>((await redis.get(auditKey(entry.subredditId))) ?? null);
+  existing.unshift(entry);
+  await redis.set(auditKey(entry.subredditId), JSON.stringify(existing.slice(0, 1000)));
+};
+
+export const readAuditEntries = async (subredditId: string, limit: number): Promise<AuditEntry[]> => {
+  const entries = parseJsonList<AuditEntry>((await redis.get(auditKey(subredditId))) ?? null);
+  return entries.slice(0, limit).map((entry) => ({
+    ...entry,
+    reasons: Array.isArray(entry.reasons) ? entry.reasons : [],
+    postTitle: entry.postTitle ?? entry.postId,
+    modId: entry.modId ?? 'unknown_mod',
+    score: Number.isFinite(entry.score) ? entry.score : 0.5,
+  }));
+};
+
+export const readAuditEntriesPaged = async (
+  subredditId: string,
+  limit: number,
+  offset: number
+): Promise<AuditEntry[]> => {
+  const entries = parseJsonList<AuditEntry>((await redis.get(auditKey(subredditId))) ?? null);
+  return entries.slice(offset, offset + limit).map((entry) => ({
+    ...entry,
+    reasons: Array.isArray(entry.reasons) ? entry.reasons : [],
+    postTitle: entry.postTitle ?? entry.postId,
+    modId: entry.modId ?? 'unknown_mod',
+    score: Number.isFinite(entry.score) ? entry.score : 0.5,
+  }));
+};
+
+export const removeFromQueue = async (subredditId: string, postId: string): Promise<void> => {
+  await queueZRem(subredditId, postId);
+};
+
+export const incrementActionStats = async (
+  subredditId: string,
+  action: 'approve' | 'remove'
+): Promise<void> => {
+  const suffix = action === 'approve' ? 'approved_today' : 'removed_today';
+  await redis.incrBy(statsKey(subredditId, suffix), 1);
+};
+
+export const readSummaryStats = async (subredditId: string): Promise<SummaryStats> => {
+  const [total, removedToday, approvedToday, reportedRaw] = await redis.mGet([
+    statsKey(subredditId, 'total'),
+    statsKey(subredditId, 'removed_today'),
+    statsKey(subredditId, 'approved_today'),
+    reportedPostsKey(subredditId),
+  ]);
+
+  const queueCount = await queueZCard(subredditId);
+  const reportedCount = parseJsonList<string>(reportedRaw ?? null).length;
+
+  return {
+    totalProcessed: parseNumber(total ?? undefined),
+    removedToday: parseNumber(removedToday ?? undefined),
+    approvedToday: parseNumber(approvedToday ?? undefined),
+    queueCount,
+    reportedCount,
+  };
+};
+
+export const readRules = async (subredditId: string): Promise<ModerationRules> => {
+  const raw = await redis.get(rulesKey(subredditId));
+  if (!raw) {
     await redis.set(rulesKey(subredditId), JSON.stringify(defaultRules));
     return defaultRules;
   }
-
   try {
-    return JSON.parse(stored) as RuleConfig;
+    const parsed = JSON.parse(raw) as Partial<ModerationRules>;
+    return {
+      autoApproveThreshold: typeof parsed.autoApproveThreshold === 'number' ? parsed.autoApproveThreshold : defaultRules.autoApproveThreshold,
+      autoRemoveThreshold: typeof parsed.autoRemoveThreshold === 'number' ? parsed.autoRemoveThreshold : defaultRules.autoRemoveThreshold,
+      communityRules: Array.isArray(parsed.communityRules) ? parsed.communityRules.filter((x): x is string => typeof x === 'string') : defaultRules.communityRules,
+    };
   } catch {
     return defaultRules;
   }
 };
 
-export const putQueueItem = async (item: QueueItem): Promise<void> => {
-  const existingIds = await readQueueIds(item.subredditId);
-  const filtered = existingIds.filter((id) => id !== item.itemId);
-  const scoreMap = new Map<string, number>();
-
-  for (const id of filtered) {
-    const raw = await redis.get(scoreKey(item.subredditId, id));
-    if (raw) {
-      const parsed = JSON.parse(raw) as QueueItem;
-      scoreMap.set(id, parsed.riskScore);
-    }
-  }
-
-  scoreMap.set(item.itemId, item.riskScore);
-
-  const sortedIds = [...scoreMap.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([id]) => id);
-
-  await Promise.all([
-    redis.set(scoreKey(item.subredditId, item.itemId), JSON.stringify(item)),
-    writeQueueIds(item.subredditId, sortedIds),
-  ]);
-};
-
-export const getQueueItems = async (
-  subredditId: string,
-  limit: number
-): Promise<QueueItem[]> => {
-  const ids = (await readQueueIds(subredditId)).slice(0, limit);
-  const rawItems = await Promise.all(ids.map((id) => redis.get(scoreKey(subredditId, id))));
-
-  return rawItems
-    .filter((raw): raw is string => Boolean(raw))
-    .map((raw) => JSON.parse(raw) as QueueItem);
-};
-
-export const getQueueLength = async (subredditId: string): Promise<number> => {
-  return (await readQueueIds(subredditId)).length;
-};
-
-export const claimItem = async (
-  subredditId: string,
-  itemId: string,
-  modId: string
-): Promise<boolean> => {
-  const key = claimKey(subredditId, itemId);
-  const existing = await redis.get(key);
-  if (existing && existing !== modId) {
-    return false;
-  }
-
-  await redis.set(key, modId, { expiration: new Date(Date.now() + 30 * 60 * 1000) });
-  return true;
-};
-
-export const logAudit = async (
-  subredditId: string,
-  event: Record<string, string>
-): Promise<void> => {
-  const key = auditKey(subredditId);
-  const raw = await redis.get(key);
-  const events = raw ? ((JSON.parse(raw) as Record<string, string>[]) ?? []) : [];
-  events.unshift(event);
-  await redis.set(key, JSON.stringify(events.slice(0, 500)));
-};
-
-export const readItem = async (
-  subredditId: string,
-  itemId: string
-): Promise<QueueItem | null> => {
-  const raw = await redis.get(scoreKey(subredditId, itemId));
-  if (!raw) {
-    return null;
-  }
-  return JSON.parse(raw) as QueueItem;
-};
-
-export const removeFromQueue = async (subredditId: string, itemId: string): Promise<void> => {
-  const ids = await readQueueIds(subredditId);
-  await writeQueueIds(
-    subredditId,
-    ids.filter((id) => id !== itemId)
-  );
-};
-
-export const setItem = async (item: QueueItem): Promise<void> => {
-  await redis.set(scoreKey(item.subredditId, item.itemId), JSON.stringify(item));
-};
-
-export const incrementPriorFlags = async (
-  subredditId: string,
-  authorId: string
-): Promise<number> => {
-  return redis.incrBy(priorFlagsKey(subredditId, authorId), 1);
-};
-
-export const getPriorFlags = async (
-  subredditId: string,
-  authorId: string
-): Promise<number> => {
-  const value = await redis.get(priorFlagsKey(subredditId, authorId));
-  return value ? Number.parseInt(value, 10) : 0;
+export const writeRules = async (subredditId: string, rules: ModerationRules): Promise<void> => {
+  await redis.set(rulesKey(subredditId), JSON.stringify(rules));
 };

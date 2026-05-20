@@ -1,81 +1,134 @@
-export type ContentKind = 'post' | 'comment';
+export type RiskLabel = 'low_risk' | 'borderline' | 'high_risk';
+export type SuggestedAction = 'approve' | 'review' | 'remove';
+
+export type ModerationRules = {
+  autoApproveThreshold: number;
+  autoRemoveThreshold: number;
+  communityRules: string[];
+};
+
+export type ScoreRecord = {
+  postId: string;
+  subredditId: string;
+  title: string;
+  body: string;
+  authorName: string;
+  accountAgeDays: number;
+  karma: number;
+  reportCount: number;
+  priorFlagsInSub: number;
+  score: number;
+  label: RiskLabel;
+  reasons: string[];
+  suggested_action: SuggestedAction;
+  createdAt: number;
+};
+
+export type ReportMeta = {
+  postId: string;
+  subredditId: string;
+  title: string;
+  authorName: string;
+  firstReportedAt: number;
+  lastReportedAt: number;
+  reportCount: number;
+  status: 'active' | 'processed';
+  processedAt?: number;
+  processedAction?: 'approve' | 'remove';
+};
+
+export type AuditEntry = {
+  postId: string;
+  subredditId: string;
+  action: 'approve' | 'remove' | 'claim' | 'escalate' | 'score';
+  modId: string;
+  timestamp: number;
+  score: number;
+  reasons: string[];
+  postTitle: string;
+};
 
 export type QueueItem = {
-  itemId: string;
+  postId: string;
   subredditId: string;
-  subredditName: string;
-  authorId: string;
+  title: string;
   authorName: string;
-  contentKind: ContentKind;
-  contentText: string;
-  permalink: string;
-  createdAt: number;
   reportCount: number;
-  riskScore: number;
-  explanation: string;
-  status: 'queued' | 'auto_approved' | 'auto_removed' | 'reviewed';
-  modAction?: 'approve' | 'remove';
+  score: number;
+  label: RiskLabel;
+  reasons: string[];
+  suggested_action: SuggestedAction;
   claimedBy?: string;
-  claimedAt?: number;
-  signals: SignalBreakdown;
 };
 
-export type SignalBreakdown = {
+export type SummaryStats = {
+  totalProcessed: number;
+  removedToday: number;
+  approvedToday: number;
+  queueCount: number;
+  reportedCount: number;
+};
+
+export type ScoreContentRequest = {
+  postId: string;
+  title: string;
+  body: string;
+  authorName: string;
   accountAgeDays: number;
-  accountAgeRisk: number;
   karma: number;
-  karmaRisk: number;
-  regexMatches: string[];
-  regexRisk: number;
-  reputation: number;
-  reputationRisk: number;
-  priorFlags: number;
-  priorFlagsRisk: number;
-  reportVolumeRisk: number;
-  llmRisk: number;
-  llmReasons: string[];
-  crossPostAnomalyRisk: number;
-  totalScore: number;
+  reportCount: number;
+  priorFlagsInSub: number;
 };
 
-export type DashboardResponse = {
-  type: 'dashboard';
-  queueLength: number;
-  highRiskCount: number;
-  topViolationTypes: Array<{ name: string; count: number }>;
-  items: QueueItem[];
+export type ScoreContentResponse = {
+  success: boolean;
+  record: ScoreRecord;
 };
 
-export type RuleConfig = {
-  autoRemoveThreshold: number;
-  autoApproveThreshold: number;
-  regexRules: string[];
-};
-
-export type ClaimRequest = {
-  itemId: string;
-};
-
-export type BulkActionRequest = {
-  action: 'approve' | 'remove';
-  maxItems: number;
-  minConfidence: number;
+export type ActionRequest = {
+  postId: string;
+  subredditId: string;
+  modId: string;
+  reason: string;
 };
 
 export type ActionResponse = {
-  status: 'ok';
+  success: boolean;
+  error?: string;
+};
+
+export type DashboardResponse = {
+  success: boolean;
+  summary: SummaryStats;
+  queue: QueueItem[];
+};
+
+export type ReportedPostRow = {
+  meta: ReportMeta;
+  score?: ScoreRecord;
+};
+
+export type ReportedPostsResponse = {
+  success: boolean;
+  posts: ReportedPostRow[];
+};
+
+export type AuditResponse = {
+  success: boolean;
+  entries: AuditEntry[];
+};
+
+export type BulkPreviewResponse = {
+  success: boolean;
+  candidates: QueueItem[];
+};
+
+export type BulkApplyResponse = {
+  success: boolean;
   updated: number;
 };
 
-export type EnqueuePayload = {
-  itemId: string;
-  subredditId: string;
-  subredditName: string;
-  authorId: string;
-  authorName: string;
-  contentKind: ContentKind;
-  contentText: string;
-  permalink: string;
-  createdAt: number;
-  reportCount: number;
+export type RulesResponse = {
+  success: boolean;
+  rules: ModerationRules;
 };

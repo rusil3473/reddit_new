@@ -8,6 +8,7 @@ menu.post('/post-create', async (c) => {
   try {
     const post = await reddit.submitCustomPost({
       title: 'Smart Intelligent Queue Dashboard',
+      entry: 'game',
     });
 
     return c.json<UiResponse>(
