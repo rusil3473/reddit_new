@@ -3,7 +3,7 @@ import type { TriggerResponse } from '@devvit/web/shared';
 import { context } from '@devvit/web/server';
 import { createPost } from '../core/post';
 import { scoreContent } from '../mod/pipeline';
-import { incrementReportAndMeta } from '../mod/store';
+import { addSiqPostId, incrementReportAndMeta } from '../mod/store';
 import type { ScoreContentRequest } from '../../shared/mod';
 
 export const triggers = new Hono();
@@ -38,6 +38,9 @@ const toScorePayload = (
 triggers.post('/on-app-install', async () => {
   try {
     const post = await createPost();
+    if (context.subredditId) {
+      await addSiqPostId(context.subredditId, post.id);
+    }
     return Response.json({
       status: 'success',
       message: `Post created in subreddit ${context.subredditName} with id ${post.id}`,
@@ -57,7 +60,7 @@ triggers.post('/on-post-create', async (c) => {
     if (!payload || !context.subredditId) {
       return c.json<TriggerResponse>({ status: 'success', message: 'Skipped: missing post payload' });
     }
-
+    
     await scoreContent(context.subredditId, payload);
     return c.json<TriggerResponse>({ status: 'success', message: 'Post scored and queued' });
   } catch (error) {

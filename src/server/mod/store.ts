@@ -9,6 +9,7 @@ const reportedPostsKey = (subredditId: string) => `reported_posts:${subredditId}
 const auditKey = (subredditId: string) => `audit:${subredditId}`;
 const statsKey = (subredditId: string, metric: string) => `stats:${subredditId}:${metric}`;
 const rulesKey = (subredditId: string) => `rules:${subredditId}`;
+const siqPostsKey = (subredditId: string) => `siq_posts:${subredditId}`;
 
 const parseNumber = (value: string | undefined, fallback = 0): number => {
   if (!value) {
@@ -138,7 +139,10 @@ const queueZRem = async (subredditId: string, postId: string): Promise<void> => 
   }
 };
 
-export const writeScoreRecord = async (record: ScoreRecord): Promise<void> => {
+export const writeScoreRecord = async (
+  record: ScoreRecord,
+  options?: { enqueue?: boolean }
+): Promise<void> => {
   const key = scoreKey(record.subredditId, record.postId);
   const existing = await redis.hGet(key, 'postId');
   await redis.hSet(key, {
@@ -158,14 +162,37 @@ export const writeScoreRecord = async (record: ScoreRecord): Promise<void> => {
     createdAt: String(record.createdAt),
   });
 
-  await queueZAdd(record.subredditId, {
-    member: record.postId,
-    score: record.score,
-  });
+  if (options?.enqueue !== false) {
+    await queueZAdd(record.subredditId, {
+      member: record.postId,
+      score: record.score,
+    });
+  }
 
   if (!existing) {
     await redis.incrBy(statsKey(record.subredditId, 'total'), 1);
   }
+};
+
+export const addSiqPostId = async (
+  subredditId: string,
+  postId: string
+): Promise<void> => {
+  const raw = await redis.get(siqPostsKey(subredditId));
+  const ids = parseJsonList<string>(raw ?? null);
+  if (!ids.includes(postId)) {
+    ids.push(postId);
+    await redis.set(siqPostsKey(subredditId), JSON.stringify(ids));
+  }
+};
+
+export const isSiqPostId = async (
+  subredditId: string,
+  postId: string
+): Promise<boolean> => {
+  const raw = await redis.get(siqPostsKey(subredditId));
+  const ids = parseJsonList<string>(raw ?? null);
+  return ids.includes(postId);
 };
 
 export const readScoreRecord = async (

@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { UiResponse } from '@devvit/web/shared';
 import { context, reddit } from '@devvit/web/server';
+import { addSiqPostId } from '../mod/store';
 
 export const menu = new Hono();
 
@@ -10,6 +11,9 @@ menu.post('/post-create', async (c) => {
       title: 'Smart Intelligent Queue Dashboard',
       entry: 'game',
     });
+    if (context.subredditId) {
+      await addSiqPostId(context.subredditId, post.id);
+    }
 
     return c.json<UiResponse>(
       {

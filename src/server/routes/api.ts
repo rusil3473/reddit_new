@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { context, reddit } from '@devvit/web/server';
+import { context, reddit, redis } from '@devvit/web/server';
 import { z } from 'zod';
 import type {
   ActionRequest,
@@ -29,15 +29,270 @@ type ErrorResponse = { success: false; error: string };
 
 export const api = new Hono();
 
-const getSubredditId = (): string | null => context.subredditId ?? null;
+const DEFAULT_SUBREDDIT_NAME = 'modecule_dev';
+const ACCESS_FORBIDDEN = 'moderator_access_required';
+
+const getTargetSubredditName = (requestedName?: string | null): string => {
+  const raw = (requestedName ?? DEFAULT_SUBREDDIT_NAME).trim();
+  const name = raw.replace(/^r\//i, '');
+  return name.length > 0 ? name : DEFAULT_SUBREDDIT_NAME;
+};
+
+const getSubredditId = async (requestedName?: string | null): Promise<string | null> => {
+  const name = getTargetSubredditName(requestedName);
+  if (name.length > 0) {
+    try {
+      const info = await reddit.getSubredditInfoByName(name);
+      return info.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return context.subredditId ?? null;
+};
+
+const isCurrentUserModerator = async (subredditName: string): Promise<boolean> => {
+  try {
+    const currentUser = await reddit.getCurrentUser();
+    if (!currentUser) {
+      return false;
+    }
+    const permissions = await currentUser.getModPermissionsForSubreddit(subredditName);
+    return Array.isArray(permissions) && permissions.length > 0;
+  } catch {
+    return false;
+  }
+};
+
+api.get('/access', async (c) => {
+  const subredditName = getTargetSubredditName(c.req.query('subreddit'));
+  const isModerator = await isCurrentUserModerator(subredditName);
+  return c.json({ success: true, isModerator });
+});
+
+api.use('*', async (c, next) => {
+  if (c.req.path.endsWith('/access')) {
+    return next();
+  }
+  const subredditName = getTargetSubredditName(c.req.query('subreddit'));
+  const isModerator = await isCurrentUserModerator(subredditName);
+  if (!isModerator) {
+    return c.json<ErrorResponse>({ success: false, error: ACCESS_FORBIDDEN }, 403);
+  }
+  return next();
+});
 const rulesSchema = z.object({
   autoApproveThreshold: z.number().min(0).max(1),
   autoRemoveThreshold: z.number().min(0).max(1),
   communityRules: z.array(z.string().min(1)).max(200),
 });
 
+type QueueApiPost = {
+  id: string;
+  title: string;
+  author: string;
+  score: number;
+  difficulty: 'easy' | 'medium' | 'hard' | 'legendary';
+  reasons: string[];
+  reportCount: number;
+  createdAt: string;
+  type: 'post' | 'comment';
+};
+
+const keyProcessed = 'stats:processed';
+const keyRemoved = 'stats:removed';
+const keyApproved = 'stats:approved';
+const keyReported = 'stats:reported';
+const keyQueueLength = 'queue:length';
+
+const difficultyFromScore = (
+  score: number
+): 'easy' | 'medium' | 'hard' | 'legendary' => {
+  if (score < 0.3) {
+    return 'easy';
+  }
+  if (score <= 0.6) {
+    return 'medium';
+  }
+  if (score <= 0.85) {
+    return 'hard';
+  }
+  return 'legendary';
+};
+
+const mapQueuePost = async (
+  subredditId: string,
+  postId: string,
+  title: string,
+  authorName: string,
+  score: number,
+  reasons: string[],
+  reportCount: number
+): Promise<QueueApiPost> => {
+  const scoreRecord = await readScoreRecord(subredditId, postId);
+  return {
+    id: postId,
+    title,
+    author: authorName,
+    score,
+    difficulty: difficultyFromScore(score),
+    reasons,
+    reportCount,
+    createdAt: new Date(scoreRecord?.createdAt ?? Date.now()).toISOString(),
+    type: 'post',
+  };
+};
+
+api.get('/queue', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+
+  const queue = await readQueueItems(subredditId, 200, 0);
+  const posts = await Promise.all(
+    queue.map((item) =>
+      mapQueuePost(
+        subredditId,
+        item.postId,
+        item.title,
+        item.authorName,
+        item.score,
+        item.reasons,
+        item.reportCount
+      )
+    )
+  );
+  posts.sort((a, b) => b.score - a.score);
+  await redis.set(keyQueueLength, String(posts.length));
+  return c.json({ type: 'QUEUE_POSTS_RESPONSE', posts });
+});
+
+api.get('/stats', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+
+  const summary = await readSummaryStats(subredditId);
+  const [processedRaw, removedRaw, approvedRaw, reportedRaw, queueLenRaw] =
+    await redis.mGet([
+      keyProcessed,
+      keyRemoved,
+      keyApproved,
+      keyReported,
+      keyQueueLength,
+    ]);
+
+  const parsed = (value: string | null, fallback: number): number => {
+    const n = Number.parseInt(value ?? '', 10);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  return c.json({
+    type: 'STATS_RESPONSE',
+    processed: parsed(processedRaw ?? null, summary.totalProcessed),
+    removed: parsed(removedRaw ?? null, summary.removedToday),
+    approved: parsed(approvedRaw ?? null, summary.approvedToday),
+    inQueue: parsed(queueLenRaw ?? null, summary.queueCount),
+    reported: parsed(reportedRaw ?? null, summary.reportedCount),
+  });
+});
+
+api.post('/mod-action', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+
+  const body = await c.req.json<{ action: 'approve' | 'remove' | 'escalate'; postId: string }>();
+  const modId = (await reddit.getCurrentUsername()) || 'unknown_mod';
+
+  if (body.action === 'escalate') {
+    const score = await readScoreRecord(subredditId, body.postId);
+    await writeAuditEntry({
+      postId: body.postId,
+      subredditId,
+      action: 'escalate',
+      modId,
+      timestamp: Date.now(),
+      score: score?.score ?? 0.5,
+      reasons: score?.reasons ?? ['manual_escalation'],
+      postTitle: score?.title ?? body.postId,
+    });
+    return c.json({ success: true });
+  }
+
+  const result = await applyAction(
+    { postId: body.postId, subredditId, modId, reason: 'manual_action' },
+    body.action
+  );
+
+  if (!result.success) {
+    return c.json(result, 500);
+  }
+
+  await Promise.all([
+    redis.incrBy(keyProcessed, 1),
+    redis.incrBy(body.action === 'remove' ? keyRemoved : keyApproved, 1),
+  ]);
+
+  return c.json({ success: true });
+});
+
+api.post('/bulk-action', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+  const body = await c.req.json<{
+    action: 'approve' | 'remove' | 'escalate';
+    postIds: string[];
+  }>();
+  const modId = (await reddit.getCurrentUsername()) || 'unknown_mod';
+  const postIds = Array.isArray(body.postIds) ? body.postIds : [];
+  let updated = 0;
+
+  if (body.action === 'escalate') {
+    for (const postId of postIds) {
+      const score = await readScoreRecord(subredditId, postId);
+      await writeAuditEntry({
+        postId,
+        subredditId,
+        action: 'escalate',
+        modId,
+        timestamp: Date.now(),
+        score: score?.score ?? 0.5,
+        reasons: score?.reasons ?? ['manual_escalation'],
+        postTitle: score?.title ?? postId,
+      });
+      updated += 1;
+    }
+    return c.json({ success: true, updated });
+  }
+
+  for (const postId of postIds) {
+    const result = await applyAction(
+      { postId, subredditId, modId, reason: 'bulk_action' },
+      body.action
+    );
+    if (result.success) {
+      updated += 1;
+    }
+  }
+
+  if (updated > 0) {
+    await Promise.all([
+      redis.incrBy(keyProcessed, updated),
+      redis.incrBy(body.action === 'remove' ? keyRemoved : keyApproved, updated),
+    ]);
+  }
+
+  return c.json({ success: true, updated });
+});
+
 api.get('/dashboard', async (c) => {
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
@@ -55,7 +310,7 @@ api.get('/dashboard', async (c) => {
 });
 
 api.get('/reported-posts', async (c) => {
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
@@ -88,7 +343,7 @@ api.get('/reported-posts', async (c) => {
 });
 
 api.get('/audit', async (c) => {
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
@@ -101,7 +356,7 @@ api.get('/audit', async (c) => {
 });
 
 api.get('/rules', async (c) => {
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
@@ -110,7 +365,7 @@ api.get('/rules', async (c) => {
 });
 
 api.post('/rules', async (c) => {
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
@@ -129,7 +384,7 @@ api.post('/rules', async (c) => {
 });
 
 api.post('/score-content', async (c) => {
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
@@ -141,7 +396,7 @@ api.post('/score-content', async (c) => {
 
 api.post('/action/approve', async (c) => {
   const body = await c.req.json<ActionRequest>();
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   const result = await applyAction(
     {
       ...body,
@@ -155,7 +410,7 @@ api.post('/action/approve', async (c) => {
 
 api.post('/action/remove', async (c) => {
   const body = await c.req.json<ActionRequest>();
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   const result = await applyAction(
     {
       ...body,
@@ -168,7 +423,7 @@ api.post('/action/remove', async (c) => {
 });
 
 api.post('/action/claim', async (c) => {
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
@@ -192,7 +447,7 @@ api.post('/action/claim', async (c) => {
 });
 
 api.post('/action/escalate', async (c) => {
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
@@ -216,7 +471,7 @@ api.post('/action/escalate', async (c) => {
 });
 
 api.get('/bulk/preview', async (c) => {
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
@@ -235,7 +490,7 @@ api.get('/bulk/preview', async (c) => {
 });
 
 api.post('/bulk/apply', async (c) => {
-  const subredditId = getSubredditId();
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }

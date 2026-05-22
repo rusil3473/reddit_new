@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   ModerationRules,
   RiskLabel,
   ScoreContentRequest,
@@ -6,7 +6,7 @@ import type {
 } from '../../shared/mod';
 
 // TODO: Move these back to environment variables before production release.
-const HARDCODED_GEMINI_API_KEY = 'AIzaSyCuwWVpL1XNTObTXhoaozF-a3rdpvYTog8';
+const HARDCODED_GEMINI_API_KEY = "AIzaSyCd_MZXYxb0-02Uredamt9hgUofJPVxDMs";//'AIzaSyCuwWVpL1XNTObTXhoaozF-a3rdpvYTog8';
 const HARDCODED_GEMINI_MODEL = 'gemini-2.5-flash';
 const HARDCODED_GEMINI_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta';
@@ -33,6 +33,44 @@ const sanitizeJsonText = (value: string): string => {
     .trim();
 };
 
+const extractFirstJsonObject = (value: string): string => {
+  const start = value.indexOf('{');
+  if (start < 0) {
+    return value;
+  }
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+  for (let i = start; i < value.length; i += 1) {
+    const ch = value[i];
+    if (inString) {
+      if (escapeNext) {
+        escapeNext = false;
+      } else if (ch === '\\\\') {
+        escapeNext = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+      continue;
+    }
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return value.slice(start, i + 1);
+      }
+    }
+  }
+  return value.slice(start);
+};
+
 const clamp = (n: number): number => Math.max(0, Math.min(1, n));
 
 const normalize = (input: Partial<GeminiScore>): GeminiScore => {
@@ -54,7 +92,7 @@ const normalize = (input: Partial<GeminiScore>): GeminiScore => {
     score: clamp(typeof input.score === 'number' ? input.score : 0.5),
     label,
     reasons: Array.isArray(input.reasons)
-      ? input.reasons.slice(0, 6)
+      ? input.reasons.slice(0, 4)
       : ['insufficient_reasons'],
     suggested_action,
   };
@@ -78,7 +116,21 @@ export const scoreWithGemini = async (
     'JSON shape must be exactly: {"score":0.82,"label":"high_risk","reasons":["..."],"suggested_action":"remove"}',
     'label must be one of: low_risk, borderline, high_risk.',
     'suggested_action must be one of: approve, review, remove.',
-    'Score must be a decimal between 0.0 and 1.0.',
+    'Score must be a decimal between 0.0 and 1.0 where 0.0 means clearly approveable and 1.0 means clearly reject/remove.',
+    'You must reason SEMANTICALLY, not by exact phrase matching. Detect paraphrases, obfuscations, and intent.',
+    'Primary objective: detect scams, social engineering, fraud, account takeover attempts, financial exploitation, and community rule violations even when wording is novel.',
+    'Critical scam/social-engineering patterns (high severity): requests for codes/OTP/seed phrase/recovery keys, promises of guaranteed returns, impersonation of trusted entities, moving users to DM for money/credentials, urgency pressure, giveaway fraud, account recovery bait, payment rerouting.',
+    'For any high-severity scam/social-engineering intent, score must be high risk (typically >=0.85) and suggested_action should be remove.',
+    'Use this weighted model exactly:',
+    'Signal 1 Content analysis (45%): threat/hate/scam/spam/harassment/deception intent, coercion, phishing style, manipulation language, suspicious CTA patterns. Include prior heuristics but generalize beyond literal words. cap 0..1.',
+    'Signal 2 Report count (25%): 0->0.0, 1->0.3, 2->0.55, 3->0.75, 4+->0.90.',
+    'Signal 3 Account signals (20%): age<7 +0.40, age7-30 +0.20, age>30 +0.0, karma<0 +0.40, karma=0 and age>180 days +0.15, karma1-10 +0.10, karma>10 +0.0. cap 0..1.',
+    'Signal 4 Community rule match (10%): compare against communityRules and infer likely violations by meaning, not only keyword overlap. cap 1.0.',
+    'finalScore=(content*0.45)+(report*0.25)+(account*0.20)+(rule*0.10). Lower score means approveable. Higher score means rejectable.',
+    'Difficulty mapping: <0.30 EASY, 0.30-0.59 MEDIUM, 0.60-0.84 HARD, >=0.85 LEGENDARY',
+    'Reasons generation constraints:',
+    'Only mention signals that fired, always add content reasons when content score>0.2, always add report reason when reports>0, add account reason only when account signal meaningfully contributed, max 4 reasons.',
+    'Before finalizing output, run a self-check: if the post asks users for sensitive credentials/codes/money transfer under promise/pressure, do not output low_risk.',
     `postId: ${request.postId}`,
     `title: ${request.title}`,
     `body: ${request.body}`,
@@ -129,7 +181,8 @@ export const scoreWithGemini = async (
 
     const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
     const cleanText = sanitizeJsonText(rawText);
-    const parsed = JSON.parse(cleanText) as Partial<GeminiScore>;
+    const firstJsonObject = extractFirstJsonObject(cleanText);
+    const parsed = JSON.parse(firstJsonObject) as Partial<GeminiScore>;
 
     return normalize(parsed);
   } catch (error) {

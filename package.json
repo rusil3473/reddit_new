@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "modecule",
+  "name": "modecule1",
   "version": "0.0.0",
   "license": "BSD-3-Clause",
   "type": "module",
@@ -9,7 +9,7 @@
     "deploy": "npm run type-check && npm run lint && devvit upload",
     "dev": "devvit playtest",
     "launch": "npm run deploy && devvit publish",
-    "lint": "eslint 'src/**/*.{ts,tsx}'",
+    "lint": "eslint src",
     "login": "devvit login",
     "prettier": "prettier --write .",
     "type-check": "tsc --build"

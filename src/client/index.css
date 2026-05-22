@@ -1,67 +1,138 @@
+﻿@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @import 'tailwindcss';
 
 :root {
-  --panel-bg: #f6f6f4;
-  --panel-border: #d7d7d2;
-  --ink: #202020;
+  color-scheme: dark;
 }
 
 body {
-  font-family: "IBM Plex Mono", "Courier New", monospace;
-  color: var(--ink);
+  margin: 0;
+  font-family: 'Inter', sans-serif;
+  background: #0f1117;
+  color: #f1f5f9;
 }
 
-.action-btn {
-  @apply inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-medium transition;
-  border: 1px solid var(--panel-border);
+.stat-card {
+  border-radius: 12px;
+  border: 1px solid #2a2d3e;
+  background: linear-gradient(180deg, #1a1d27 0%, #171a23 100%);
+  transition: border-color 160ms ease, filter 160ms ease;
 }
 
-.action-btn:hover {
+.case-card {
+  border-radius: 14px;
+  border: 1px solid #2a2d3e;
+  background: linear-gradient(160deg, #1a1d27 0%, #1b1f2b 100%);
+  transition: border-color 160ms ease, filter 160ms ease;
+}
+
+.hover-glow:hover {
+  border-color: #7c5cfc;
   filter: brightness(1.04);
 }
 
-.action-btn:active {
-  filter: brightness(1.09);
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.18);
+.tab-btn {
+  padding: 0.75rem 0.1rem;
+  margin-right: 1rem;
+  border-bottom: 2px solid transparent;
+  font-size: 0.89rem;
+  color: #64748b;
+  transition: color 160ms ease, border-color 160ms ease;
 }
 
-.action-btn:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
+.tab-btn:hover {
+  color: #f1f5f9;
 }
 
-.clickable-card {
-  @apply cursor-pointer transition;
-  background: var(--panel-bg);
-  border-color: var(--panel-border);
+.tab-btn.active {
+  color: #f1f5f9;
+  border-bottom-color: #7c5cfc;
 }
 
-.clickable-card:hover {
-  background: #efefec;
+.action-link {
+  transition: color 160ms ease;
 }
 
-.spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  border-top-color: currentColor;
-  border-radius: 9999px;
-  animation: spin 0.8s linear infinite;
+.action-link:hover {
+  color: #f1f5f9;
 }
 
-.skeleton {
-  background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 37%, #e2e8f0 63%);
-  background-size: 400% 100%;
-  animation: shimmer 1.3s ease infinite;
+.queue-pulse {
+  animation: queuePulse 2s ease-in-out infinite;
 }
 
-.toast {
-  animation: fadeinout 3s ease forwards;
+.legendary-glow {
+  animation: legendaryGlow 2.8s ease-in-out infinite;
 }
 
-@keyframes spin {
+.legend-pill {
+  box-shadow: 0 0 14px rgba(124, 92, 252, 0.25);
+}
+
+.tab-fade {
+  animation: tabFade 0.26s ease;
+}
+
+.skeleton-pulse {
+  background: linear-gradient(90deg, #202433 25%, #282d40 50%, #202433 75%);
+  background-size: 220% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.toast-slide {
+  animation: toastIn 0.2s ease;
+}
+
+.modecule-slider {
+  appearance: none;
+  height: 8px;
+  border-radius: 999px;
+  background: #2a2d3e;
+}
+
+.modecule-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #7c5cfc;
+  border: 2px solid #c4b5fd;
+}
+
+.modecule-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #7c5cfc;
+  border: 2px solid #c4b5fd;
+}
+
+@keyframes queuePulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 rgba(239, 68, 68, 0);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(239, 68, 68, 0.2);
+  }
+}
+
+@keyframes legendaryGlow {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 1px rgba(124, 92, 252, 0.35), 0 0 0 rgba(124, 92, 252, 0);
+  }
+  50% {
+    box-shadow: inset 0 0 0 1px rgba(124, 92, 252, 0.8), 0 0 14px rgba(124, 92, 252, 0.2);
+  }
+}
+
+@keyframes tabFade {
+  from {
+    opacity: 0.25;
+  }
   to {
-    transform: rotate(360deg);
+    opacity: 1;
   }
 }
 
@@ -70,22 +141,17 @@ body {
     background-position: 100% 0;
   }
   100% {
-    background-position: 0 0;
+    background-position: -100% 0;
   }
 }
 
-@keyframes fadeinout {
-  0% {
+@keyframes toastIn {
+  from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateX(12px);
   }
-  10%,
-  85% {
+  to {
     opacity: 1;
-    transform: translateY(0);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(8px);
+    transform: translateX(0);
   }
 }

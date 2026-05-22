@@ -2,6 +2,7 @@ import { reddit } from '@devvit/web/server';
 import type { ActionRequest, ScoreContentRequest, ScoreRecord } from '../../shared/mod';
 import { scoreWithGemini } from './llm';
 import {
+  isSiqPostId,
   incrementActionStats,
   markReportedPostProcessed,
   readRules,
@@ -11,6 +12,31 @@ import {
   writeScoreRecord,
 } from './store';
 
+const detectCriticalScam = (title: string, body: string): { hit: boolean; reasons: string[] } => {
+  const text = `${title} ${body}`.toLowerCase();
+  const reasons: string[] = [];
+
+  const hasDoubleCrypto = /double\s+.*crypto|crypto\s+.*double/.test(text);
+  const hasCodeRequest =
+    /12\s*codes|verification\s*code|otp|seed\s*phrase|recovery\s*phrase|wallet\s*key/.test(text);
+  const hasDmHarvest = /dm\s+me|message\s+me\s+for/.test(text);
+  const hasAccountTakeover = /give\s+me\s+your\s+account|i\s+can\s+access|hacking\s+account/.test(text);
+
+  if (hasDoubleCrypto) {
+    reasons.push('Crypto doubling scam language');
+  }
+  if (hasCodeRequest) {
+    reasons.push('Credential/code harvesting language');
+  }
+  if (hasDmHarvest) {
+    reasons.push('DM solicitation pattern');
+  }
+  if (hasAccountTakeover) {
+    reasons.push('Account takeover intent');
+  }
+
+  return { hit: reasons.length > 0, reasons };
+};
 const toThingId = (id: string): `t3_${string}` => {
   if (id.startsWith('t3_')) {
     return id as `t3_${string}`;
@@ -31,19 +57,42 @@ export const scoreContent = async (
   subredditId: string,
   payload: ScoreContentRequest
 ): Promise<ScoreRecord> => {
+  const existing = await readScoreRecord(subredditId, payload.postId);
+  if (existing && payload.reportCount <= existing.reportCount) {
+    return existing;
+  }
+
+  const siqPost = await isSiqPostId(subredditId, payload.postId);
   const rules = await readRules(subredditId);
   const modelResult = await scoreWithGemini(payload, rules);
+  const scamOverride = detectCriticalScam(payload.title, payload.body);
+
+  const forcedScore = scamOverride.hit ? Math.max(modelResult.score, 0.92) : modelResult.score;
+  const forcedLabel = forcedScore >= 0.6 ? 'high_risk' : modelResult.label;
+  const mergedReasons = scamOverride.hit
+    ? [...scamOverride.reasons, ...modelResult.reasons].slice(0, 4)
+    : modelResult.reasons;
+  const forcedSuggestedAction = scamOverride.hit ? 'remove' : modelResult.suggested_action;
+
+  const finalSuggestedAction = siqPost ? 'approve' : forcedSuggestedAction;
+  const finalReasons = siqPost
+    ? ['siq_dashboard_post_auto_approved']
+    : mergedReasons;
+
   const record: ScoreRecord = {
     ...payload,
     subredditId,
-    score: modelResult.score,
-    label: modelResult.label,
-    reasons: modelResult.reasons,
-    suggested_action: modelResult.suggested_action,
+    score: forcedScore,
+    label: forcedLabel,
+    reasons: finalReasons,
+    suggested_action: finalSuggestedAction,
     createdAt: Date.now(),
   };
 
-  await writeScoreRecord(record);
+  await writeScoreRecord(record, { enqueue: !siqPost });
+  if (siqPost) {
+    await reddit.approve(toThingId(payload.postId));
+  }
   await writeAuditEntry({
     postId: record.postId,
     subredditId,
