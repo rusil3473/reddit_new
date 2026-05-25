@@ -24,6 +24,9 @@ import {
   readRules,
   writeRules,
   writeAuditEntry,
+  addEscalatedPost,
+  removeEscalatedPost,
+  readEscalatedPosts,
 } from '../mod/store';
 
 type ErrorResponse = { success: false; error: string };
@@ -94,6 +97,19 @@ const keyApproved = 'stats:approved';
 const keyReported = 'stats:reported';
 const keyQueueLength = 'queue:length';
 
+type QueueApiPost = {
+  id: string;
+  title: string;
+  author: string;
+  score: number;
+  difficulty: 'easy' | 'medium' | 'hard' | 'legendary';
+  reasons: string[];
+  reportCount: number;
+  createdAt: string;
+  type: 'post' | 'comment';
+  confidence: number;
+};
+
 const difficultyFromScore = (
   score: number
 ): 'easy' | 'medium' | 'hard' | 'legendary' => {
@@ -146,6 +162,49 @@ api.get('/queue', async (c) => {
   return c.json({ type: 'QUEUE_POSTS_RESPONSE', posts });
 });
 
+api.get('/escalated', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+  const items = await readEscalatedPosts(subredditId);
+  const posts: QueueApiPost[] = items.map((item) => ({
+    id: item.postId,
+    title: item.title,
+    author: item.authorName,
+    score: item.score,
+    difficulty: difficultyFromScore(item.score),
+    reasons: item.reasons,
+    reportCount: item.reportCount,
+    createdAt: new Date().toISOString(),
+    type: 'post',
+    confidence: 0.4,
+  }));
+  return c.json({ type: 'ESCALATED_POSTS_RESPONSE', posts });
+});
+
+api.post('/escalated-action', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+  const body = await c.req.json<{ action: 'approve' | 'remove'; postId: string }>();
+  const modId = (await reddit.getCurrentUsername()) || 'unknown_mod';
+  await removeEscalatedPost(subredditId, body.postId);
+  const result = await applyAction(
+    { postId: body.postId, subredditId, modId, reason: 'escalated_review' },
+    body.action
+  );
+  if (!result.success) {
+    return c.json(result, 500);
+  }
+  await Promise.all([
+    redis.incrBy(keyProcessed, 1),
+    redis.incrBy(body.action === 'remove' ? keyRemoved : keyApproved, 1),
+  ]);
+  return c.json({ success: true });
+});
+
 api.get('/stats', async (c) => {
   const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
@@ -188,6 +247,7 @@ api.post('/mod-action', async (c) => {
 
   if (body.action === 'escalate') {
     const score = await readScoreRecord(subredditId, body.postId);
+    await addEscalatedPost(subredditId, body.postId);
     await writeAuditEntry({
       postId: body.postId,
       subredditId,
@@ -266,6 +326,7 @@ api.post('/bulk-action', async (c) => {
   if (body.action === 'escalate') {
     for (const postId of postIds) {
       const score = await readScoreRecord(subredditId, postId);
+      await addEscalatedPost(subredditId, postId);
       await writeAuditEntry({
         postId,
         subredditId,

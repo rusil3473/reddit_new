@@ -456,3 +456,39 @@ export const readRules = async (subredditId: string): Promise<ModerationRules> =
 export const writeRules = async (subredditId: string, rules: ModerationRules): Promise<void> => {
   await redis.set(rulesKey(subredditId), JSON.stringify(rules));
 };
+
+const escalatedKey = (subredditId: string) => `escalated:${subredditId}`;
+
+export const addEscalatedPost = async (subredditId: string, postId: string): Promise<void> => {
+  const ids = parseJsonList<string>((await redis.get(escalatedKey(subredditId))) ?? null);
+  if (!ids.includes(postId)) {
+    ids.push(postId);
+    await redis.set(escalatedKey(subredditId), JSON.stringify(ids));
+  }
+};
+
+export const removeEscalatedPost = async (subredditId: string, postId: string): Promise<void> => {
+  const ids = parseJsonList<string>((await redis.get(escalatedKey(subredditId))) ?? null);
+  const filtered = ids.filter((id) => id !== postId);
+  await redis.set(escalatedKey(subredditId), JSON.stringify(filtered));
+};
+
+export const readEscalatedPosts = async (subredditId: string): Promise<QueueItem[]> => {
+  const ids = parseJsonList<string>((await redis.get(escalatedKey(subredditId))) ?? null);
+  if (ids.length === 0) return [];
+  const scoreHashes = await Promise.all(ids.map((postId) => redis.hGetAll(scoreKey(subredditId, postId))));
+  return scoreHashes
+    .filter((raw) => raw.postId)
+    .map((raw) => ({
+      postId: requiredString(raw.postId),
+      subredditId: requiredString(raw.subredditId),
+      title: requiredString(raw.title),
+      authorName: requiredString(raw.authorName),
+      reportCount: parseNumber(raw.reportCount),
+      score: parseNumber(raw.score),
+      label: (raw.label as QueueItem['label']) ?? 'borderline',
+      reasons: parseJsonList<string>(raw.reasons ?? null),
+      suggested_action: (raw.suggested_action as QueueItem['suggested_action']) ?? 'review',
+      claimedBy: raw.claimedBy,
+    }));
+};

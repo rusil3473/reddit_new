@@ -4,7 +4,7 @@ import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { apiClient } from './lib/apiClient';
 
-type TabKey = 'priority' | 'reported' | 'audit' | 'rules';
+type TabKey = 'priority' | 'escalated' | 'reported' | 'audit' | 'rules';
 type FeedSort = 'risk_desc' | 'risk_asc' | 'newest';
 type ModAction = 'approve' | 'remove' | 'escalate';
 type Difficulty = 'easy' | 'medium' | 'hard' | 'legendary';
@@ -46,6 +46,7 @@ type AccessResponse = { success: boolean; isModerator: boolean };
 
 const tabs: Array<{ key: TabKey; label: string }> = [
   { key: 'priority', label: 'Priority Queue' },
+  { key: 'escalated', label: 'Escalated Queue' },
   { key: 'reported', label: 'Reported Posts' },
   { key: 'audit', label: 'Audit Log' },
   { key: 'rules', label: 'Rules' },
@@ -81,6 +82,8 @@ const App = () => {
   const [activeTab, setActiveTab] = useState<TabKey>('priority');
   const [queuePosts, setQueuePosts] = useState<QueuePost[]>([]);
   const [reportedPosts, setReportedPosts] = useState<QueuePost[]>([]);
+  const [escalatedPosts, setEscalatedPosts] = useState<QueuePost[]>([]);
+  const [loadingEscalated, setLoadingEscalated] = useState(true);
   const [auditLog, setAuditLog] = useState<AuditItem[]>([]);
   const [stats, setStats] = useState({ processed: 0, removed: 0, approved: 0, inQueue: 0, reported: 0 });
   const [feedSort, setFeedSort] = useState<FeedSort>('risk_desc');
@@ -167,6 +170,18 @@ const App = () => {
     }
   };
 
+  const refreshEscalated = async (): Promise<void> => {
+    setLoadingEscalated(true);
+    try {
+      const res = await apiClient.request<{ type: string; posts: QueuePost[] }>('/api/escalated');
+      setEscalatedPosts(res.posts);
+    } catch {
+      setEscalatedPosts([]);
+    } finally {
+      setLoadingEscalated(false);
+    }
+  };
+
   const refreshStats = async (): Promise<void> => {
     try {
       const response = await sendStatsMessage();
@@ -191,6 +206,7 @@ const App = () => {
         }
         void refreshQueue();
         void refreshReported();
+        void refreshEscalated();
         void refreshStats();
       })();
     }, 0);
@@ -294,6 +310,24 @@ const App = () => {
       removePostsFromQueue([post.id]);
       addToast(`${actionLabels[action]}d 1 post`, 'success');
       void refreshStats();
+      if (action === 'escalate') void refreshEscalated();
+    } catch {
+      addToast('Action failed — try again', 'error');
+    } finally {
+      setProcessingIds((prev) => ({ ...prev, [post.id]: false }));
+    }
+  };
+
+  const runEscalatedAction = async (post: QueuePost, action: 'approve' | 'remove'): Promise<void> => {
+    setProcessingIds((prev) => ({ ...prev, [post.id]: true }));
+    try {
+      await apiClient.request<{ success: boolean }>('/api/escalated-action', {
+        method: 'POST',
+        body: JSON.stringify({ action, postId: post.id }),
+      });
+      setEscalatedPosts((prev) => prev.filter((p) => p.id !== post.id));
+      addToast(`${actionLabels[action]}d 1 escalated post`, 'success');
+      void refreshStats();
     } catch {
       addToast('Action failed — try again', 'error');
     } finally {
@@ -317,6 +351,7 @@ const App = () => {
       removePostsFromQueue(ids);
       addToast(`${res.updated} posts ${action === 'approve' ? 'approved' : action === 'remove' ? 'removed' : 'escalated'}`, 'success');
       void refreshStats();
+      if (action === 'escalate') void refreshEscalated();
     } catch {
       addToast('Action failed — try again', 'error');
     } finally {
@@ -508,6 +543,43 @@ const App = () => {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+
+          {activeTab === 'escalated' && (
+            <div className="space-y-3">
+              {loadingEscalated && (
+                <div className="space-y-3">
+                  <SkeletonCard />
+                  <SkeletonCard />
+                </div>
+              )}
+              {!loadingEscalated && escalatedPosts.length === 0 && (
+                <div className="stat-card grid place-items-center px-6 py-10 text-center">
+                  <p className="text-lg font-semibold">No escalated posts</p>
+                  <p className="mt-1 text-sm text-[#64748B]">Posts escalated for review will appear here</p>
+                </div>
+              )}
+              {!loadingEscalated && escalatedPosts.map((post) => (
+                <article key={post.id} className="case-card hover-glow grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto]">
+                  <div className="space-y-3">
+                    <DifficultyBadge difficulty={post.difficulty} />
+                    <div>
+                      <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
+                      <p className="mt-1 text-sm text-[#64748B]">u/{post.author}</p>
+                    </div>
+                    <ScoreBar score={post.score} />
+                    <div className="flex flex-wrap gap-2">
+                      {post.reasons.map((reason) => <Chip key={`${post.id}-${reason}`} label={reason} />)}
+                    </div>
+                  </div>
+                  <div className="relative flex items-start justify-end gap-2 text-sm lg:flex-col lg:text-right">
+                    <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#22C55E]" onClick={() => void runEscalatedAction(post, 'approve')}>Approve</button>
+                    <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#EF4444]" onClick={() => void runEscalatedAction(post, 'remove')}>Remove</button>
+                  </div>
+                </article>
+              ))}
             </div>
           )}
 
