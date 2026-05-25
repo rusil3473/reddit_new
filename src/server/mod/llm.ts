@@ -13,25 +13,148 @@ export type LearningSignal = {
   postId: string;
   authorId: string;
   timestamp: number;
+  // Phase 1 additions (optional for backwards compat with old stored signals)
+  titleSnippet?: string;
+  bodySnippet?: string;
+  trigrams?: Record<string, number>;
+  reasons?: string[];
 };
 
+export type SimilarSignal = {
+  signal: LearningSignal;
+  similarity: number;
+};
+
+const STOPWORDS = new Set([
+  'the','and','for','with','that','this','from','your',
+  'you','are','not','no','be','to','of','on','is','was','it','in','a','an',
+  'how','do','what','why','when','who','where','can','my','me','i','we',
+]);
+
+const SNIPPET_LIMIT = 200;
+
+const normalizeText = (text: string): string =>
+  text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
 export const extractFingerprint = (title: string, body: string): string[] => {
-  const stopwords = new Set(['the','and','for','with','that','this','from','your',
-    'you','are','not','no','be','to','of','on','is','was','it','in','a','an',
-    'how','do','what','why','when','who','where','can','my','me','i','we']);
-  const text = `${title} ${body}`.toLowerCase();
-  const tokens = text.split(/[^a-z0-9]+/).filter(t => t.length >= 4 && !stopwords.has(t));
+  const text = normalizeText(`${title} ${body}`);
+  const tokens = text.split(' ').filter((t) => t.length >= 4 && !STOPWORDS.has(t));
   return [...new Set(tokens)].slice(0, 12);
 };
 
-const computeSimilarity = (fingerprint: string[], signal: LearningSignal): number => {
-  const overlap = fingerprint.filter(token => signal.fingerprint.includes(token)).length;
-  const union = new Set([...fingerprint, ...signal.fingerprint]).size;
+/**
+ * Build a trigram (3 consecutive tokens) bag-of-words from title+body.
+ * Captures phrasing context that single-token Jaccard misses.
+ */
+export const extractTrigrams = (title: string, body: string): Record<string, number> => {
+  const text = normalizeText(`${title} ${body}`);
+  const tokens = text.split(' ').filter((t) => t.length > 0);
+  const counts: Record<string, number> = {};
+  if (tokens.length < 3) {
+    // For very short text, fall back to bigrams + unigrams so we have something
+    for (let i = 0; i < tokens.length - 1; i += 1) {
+      const bg = `${tokens[i]} ${tokens[i + 1]}`;
+      counts[bg] = (counts[bg] ?? 0) + 1;
+    }
+    for (const t of tokens) counts[t] = (counts[t] ?? 0) + 1;
+    return counts;
+  }
+  for (let i = 0; i <= tokens.length - 3; i += 1) {
+    const tri = `${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`;
+    counts[tri] = (counts[tri] ?? 0) + 1;
+  }
+  return counts;
+};
+
+const cosineSimilarity = (
+  a: Record<string, number>,
+  b: Record<string, number>
+): number => {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (const key of Object.keys(a)) {
+    const av = a[key] ?? 0;
+    normA += av * av;
+    const bv = b[key];
+    if (bv !== undefined) {
+      dot += av * bv;
+    }
+  }
+  for (const key of Object.keys(b)) {
+    const bv = b[key] ?? 0;
+    normB += bv * bv;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+};
+
+const jaccardSimilarity = (a: string[], b: string[]): number => {
+  if (a.length === 0 && b.length === 0) return 0;
+  const setB = new Set(b);
+  const overlap = a.filter((t) => setB.has(t)).length;
+  const union = new Set([...a, ...b]).size;
   return union === 0 ? 0 : overlap / union;
+};
+
+/**
+ * Score similarity between current post and a stored signal.
+ * Prefers trigram cosine when both sides have trigrams; falls back to
+ * fingerprint Jaccard for legacy signals.
+ */
+const similarityToSignal = (
+  currentTrigrams: Record<string, number>,
+  currentFingerprint: string[],
+  signal: LearningSignal
+): number => {
+  if (signal.trigrams && Object.keys(signal.trigrams).length > 0) {
+    return cosineSimilarity(currentTrigrams, signal.trigrams);
+  }
+  return jaccardSimilarity(currentFingerprint, signal.fingerprint);
+};
+
+/**
+ * Build a snippet from text suitable for embedding in an LLM prompt.
+ * Collapses whitespace and truncates to SNIPPET_LIMIT chars.
+ */
+export const buildSnippet = (text: string, limit: number = SNIPPET_LIMIT): string => {
+  const cleaned = (text ?? '').replace(/\s+/g, ' ').trim();
+  if (cleaned.length <= limit) return cleaned;
+  return `${cleaned.slice(0, limit - 1)}…`;
+};
+
+/**
+ * Find the top-K most similar past signals to the current post content.
+ * Pure function: no Redis access here.
+ */
+export const findSimilarSignals = (
+  title: string,
+  body: string,
+  pastSignals: LearningSignal[],
+  k: number = 5
+): SimilarSignal[] => {
+  if (pastSignals.length === 0) return [];
+  const currentTrigrams = extractTrigrams(title, body);
+  const currentFingerprint = extractFingerprint(title, body);
+
+  const scored: SimilarSignal[] = pastSignals
+    .map((signal) => ({
+      signal,
+      similarity: similarityToSignal(currentTrigrams, currentFingerprint, signal),
+    }))
+    .filter((s) => s.similarity > 0);
+
+  scored.sort((a, b) => b.similarity - a.similarity);
+  return scored.slice(0, k);
 };
 
 const clampScore = (n: number): number => Math.max(0, Math.min(1, n));
 
+/**
+ * @deprecated kept for backwards compatibility with any caller still using
+ * the additive Jaccard-based adjustment. New code should use the RAG path
+ * via scoreWithLearning, which retrieves examples and lets Gemini decide.
+ */
 export const applyLearningAdjustment = (
   baseScore: number,
   title: string,
@@ -42,7 +165,7 @@ export const applyLearningAdjustment = (
   let adjustment = 0;
   let totalWeight = 0;
   for (const signal of pastSignals) {
-    const similarity = computeSimilarity(fingerprint, signal);
+    const similarity = jaccardSimilarity(fingerprint, signal.fingerprint);
     if (similarity >= 0.25) {
       const ageInDays = (Date.now() - signal.timestamp) / (1000 * 60 * 60 * 24);
       const decayFactor = Math.exp(-0.05 * ageInDays);
@@ -63,12 +186,13 @@ export const scoreWithLearning = async (
 ): Promise<LLMScore> => {
   const baseResult = await scoreLLM(request, rules);
   const fingerprint = extractFingerprint(request.title, request.body);
+  const currentTrigrams = extractTrigrams(request.title, request.body);
 
   let adjustment = 0;
   let totalWeight = 0;
 
   for (const signal of pastSignals) {
-    const similarity = computeSimilarity(fingerprint, signal);
+    const similarity = similarityToSignal(currentTrigrams, fingerprint, signal);
     if (similarity >= 0.25) {
       const ageInDays = (Date.now() - signal.timestamp) / (1000 * 60 * 60 * 24);
       const decayFactor = Math.exp(-0.05 * ageInDays);
@@ -87,7 +211,7 @@ export const scoreWithLearning = async (
     reasons.push(normalizedAdjustment > 0 ? 'Similar to past moderated content' : 'Similar to past approved content');
   }
 
-  const matchingSignalCount = pastSignals.filter(s => computeSimilarity(fingerprint, s) >= 0.25).length;
+  const matchingSignalCount = pastSignals.filter((s) => similarityToSignal(currentTrigrams, fingerprint, s) >= 0.25).length;
   const confidence = matchingSignalCount === 0
     ? 0.4
     : Math.min(0.4 + matchingSignalCount * 0.06, 0.95);

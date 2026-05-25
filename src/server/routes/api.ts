@@ -14,7 +14,7 @@ import type {
   ScoreContentResponse,
 } from '../../shared/mod';
 import { applyAction, scoreContent } from '../mod/pipeline';
-import { extractFingerprint, type LearningSignal } from '../mod/llm';
+import { extractFingerprint, extractTrigrams, buildSnippet, type LearningSignal } from '../mod/llm';
 import {
   readAuditEntriesPaged,
   readQueueItems,
@@ -273,8 +273,13 @@ api.post('/mod-action', async (c) => {
   //originalScore >= 0.30 && originalScore <= 0.75 && 
   if (scoreRecord) {
     const fingerprint = extractFingerprint(scoreRecord.title, scoreRecord.body);
+    const trigrams = extractTrigrams(scoreRecord.title, scoreRecord.body);
     const signal: LearningSignal = {
       fingerprint,
+      trigrams,
+      titleSnippet: buildSnippet(scoreRecord.title, 120),
+      bodySnippet: buildSnippet(scoreRecord.body, 200),
+      reasons: scoreRecord.reasons,
       action: body.action,
       originalScore,
       postId: body.postId,
