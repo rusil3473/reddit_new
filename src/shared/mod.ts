@@ -22,6 +22,8 @@ export type ScoreRecord = {
   reasons: string[];
   suggested_action: SuggestedAction;
   createdAt: number;
+  signalCountAtScoring?: number;
+  confidence?: number;
 };
 
 export type ReportMeta = {

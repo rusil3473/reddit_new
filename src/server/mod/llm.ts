@@ -4,6 +4,105 @@
   ScoreContentRequest,
   SuggestedAction,
 } from '../../shared/mod';
+import { scoreLLM, type LLMScore } from './llm-router';
+
+export type LearningSignal = {
+  fingerprint: string[];
+  action: 'approve' | 'remove';
+  originalScore: number;
+  postId: string;
+  authorId: string;
+  timestamp: number;
+};
+
+export const extractFingerprint = (title: string, body: string): string[] => {
+  const stopwords = new Set(['the','and','for','with','that','this','from','your',
+    'you','are','not','no','be','to','of','on','is','was','it','in','a','an',
+    'how','do','what','why','when','who','where','can','my','me','i','we']);
+  const text = `${title} ${body}`.toLowerCase();
+  const tokens = text.split(/[^a-z0-9]+/).filter(t => t.length >= 4 && !stopwords.has(t));
+  return [...new Set(tokens)].slice(0, 12);
+};
+
+const computeSimilarity = (fingerprint: string[], signal: LearningSignal): number => {
+  const overlap = fingerprint.filter(token => signal.fingerprint.includes(token)).length;
+  const union = new Set([...fingerprint, ...signal.fingerprint]).size;
+  return union === 0 ? 0 : overlap / union;
+};
+
+const clampScore = (n: number): number => Math.max(0, Math.min(1, n));
+
+export const applyLearningAdjustment = (
+  baseScore: number,
+  title: string,
+  body: string,
+  pastSignals: LearningSignal[]
+): number => {
+  const fingerprint = extractFingerprint(title, body);
+  let adjustment = 0;
+  let totalWeight = 0;
+  for (const signal of pastSignals) {
+    const similarity = computeSimilarity(fingerprint, signal);
+    if (similarity >= 0.25) {
+      const ageInDays = (Date.now() - signal.timestamp) / (1000 * 60 * 60 * 24);
+      const decayFactor = Math.exp(-0.05 * ageInDays);
+      const weight = similarity * decayFactor * 0.15;
+      const direction = signal.action === 'remove' ? 1 : -1;
+      adjustment += direction * weight;
+      totalWeight += similarity * decayFactor;
+    }
+  }
+  const normalizedAdjustment = totalWeight > 0 ? adjustment / Math.max(totalWeight, 1) : 0;
+  return clampScore(baseScore + normalizedAdjustment);
+};
+
+export const scoreWithLearning = async (
+  request: ScoreContentRequest,
+  rules: ModerationRules,
+  pastSignals: LearningSignal[]
+): Promise<LLMScore> => {
+  const baseResult = await scoreLLM(request, rules);
+  const fingerprint = extractFingerprint(request.title, request.body);
+
+  let adjustment = 0;
+  let totalWeight = 0;
+
+  for (const signal of pastSignals) {
+    const similarity = computeSimilarity(fingerprint, signal);
+    if (similarity >= 0.25) {
+      const ageInDays = (Date.now() - signal.timestamp) / (1000 * 60 * 60 * 24);
+      const decayFactor = Math.exp(-0.05 * ageInDays);
+      const weight = similarity * decayFactor * 0.15;
+      const direction = signal.action === 'remove' ? 1 : -1;
+      adjustment += direction * weight;
+      totalWeight += similarity * decayFactor;
+    }
+  }
+
+  const normalizedAdjustment = totalWeight > 0 ? adjustment / Math.max(totalWeight, 1) : 0;
+  const adjustedScore = clampScore(baseResult.score + normalizedAdjustment);
+
+  const reasons = [...baseResult.reasons];
+  if (Math.abs(normalizedAdjustment) > 0.05) {
+    reasons.push(normalizedAdjustment > 0 ? 'Similar to past moderated content' : 'Similar to past approved content');
+  }
+
+  const matchingSignalCount = pastSignals.filter(s => computeSimilarity(fingerprint, s) >= 0.25).length;
+  const confidence = matchingSignalCount === 0
+    ? 0.4
+    : Math.min(0.4 + matchingSignalCount * 0.06, 0.95);
+
+  const label: RiskLabel = adjustedScore < 0.3 ? 'low_risk' : adjustedScore <= 0.6 ? 'borderline' : 'high_risk';
+  const suggested_action: SuggestedAction = adjustedScore < rules.autoApproveThreshold ? 'approve' : adjustedScore >= rules.autoRemoveThreshold ? 'remove' : 'review';
+
+  return {
+    score: adjustedScore,
+    label,
+    reasons: reasons.slice(0, 4),
+    suggested_action,
+    confidence,
+  };
+};
 
 // TODO: Move these back to environment variables before production release.
 const HARDCODED_GEMINI_API_KEY = "AIzaSyCd_MZXYxb0-02Uredamt9hgUofJPVxDMs";//'AIzaSyCuwWVpL1XNTObTXhoaozF-a3rdpvYTog8';

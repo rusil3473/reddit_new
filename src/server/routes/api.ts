@@ -14,6 +14,7 @@ import type {
   ScoreContentResponse,
 } from '../../shared/mod';
 import { applyAction, scoreContent } from '../mod/pipeline';
+import { extractFingerprint, applyLearningAdjustment, type LearningSignal } from '../mod/llm';
 import {
   readAuditEntriesPaged,
   readQueueItems,
@@ -87,18 +88,6 @@ const rulesSchema = z.object({
   communityRules: z.array(z.string().min(1)).max(200),
 });
 
-type QueueApiPost = {
-  id: string;
-  title: string;
-  author: string;
-  score: number;
-  difficulty: 'easy' | 'medium' | 'hard' | 'legendary';
-  reasons: string[];
-  reportCount: number;
-  createdAt: string;
-  type: 'post' | 'comment';
-};
-
 const keyProcessed = 'stats:processed';
 const keyRemoved = 'stats:removed';
 const keyApproved = 'stats:approved';
@@ -120,48 +109,37 @@ const difficultyFromScore = (
   return 'legendary';
 };
 
-const mapQueuePost = async (
-  subredditId: string,
-  postId: string,
-  title: string,
-  authorName: string,
-  score: number,
-  reasons: string[],
-  reportCount: number
-): Promise<QueueApiPost> => {
-  const scoreRecord = await readScoreRecord(subredditId, postId);
-  return {
-    id: postId,
-    title,
-    author: authorName,
-    score,
-    difficulty: difficultyFromScore(score),
-    reasons,
-    reportCount,
-    createdAt: new Date(scoreRecord?.createdAt ?? Date.now()).toISOString(),
-    type: 'post',
-  };
-};
-
 api.get('/queue', async (c) => {
   const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
 
+  const rawSignals = await redis.zRange(`learning:signals:${subredditId}`, 0, -1);
+  const pastSignals: LearningSignal[] = rawSignals
+    .map(s => { try { return JSON.parse(typeof s === 'string' ? s : s.member); } catch { return null; } })
+    .filter((s): s is LearningSignal => s !== null);
+
   const queue = await readQueueItems(subredditId, 200, 0);
   const posts = await Promise.all(
-    queue.map((item) =>
-      mapQueuePost(
-        subredditId,
-        item.postId,
-        item.title,
-        item.authorName,
-        item.score,
-        item.reasons,
-        item.reportCount
-      )
-    )
+    queue.map(async (item) => {
+      const scoreRecord = await readScoreRecord(subredditId, item.postId);
+      const adjustedScore = pastSignals.length > 0
+        ? applyLearningAdjustment(item.score, item.title, scoreRecord?.body ?? '', pastSignals)
+        : item.score;
+      return {
+        id: item.postId,
+        title: item.title,
+        author: item.authorName,
+        score: adjustedScore,
+        difficulty: difficultyFromScore(adjustedScore),
+        reasons: item.reasons,
+        reportCount: item.reportCount,
+        createdAt: new Date(scoreRecord?.createdAt ?? Date.now()).toISOString(),
+        type: 'post' as const,
+        confidence: scoreRecord?.confidence ?? 0.4,
+      };
+    })
   );
   posts.sort((a, b) => b.score - a.score);
   await redis.set(keyQueueLength, String(posts.length));
@@ -230,6 +208,38 @@ api.post('/mod-action', async (c) => {
 
   if (!result.success) {
     return c.json(result, 500);
+  }
+
+  const scoreRecord = await readScoreRecord(subredditId, body.postId);
+  const originalScore = scoreRecord?.score ?? 0.5;
+
+  // Store learning signal for borderline posts
+  //originalScore >= 0.30 && originalScore <= 0.75 && 
+  if (scoreRecord) {
+    const fingerprint = extractFingerprint(scoreRecord.title, scoreRecord.body);
+    const signal: LearningSignal = {
+      fingerprint,
+      action: body.action,
+      originalScore,
+      postId: body.postId,
+      authorId: scoreRecord.authorName,
+      timestamp: Date.now(),
+    };
+    await redis.zAdd(`learning:signals:${subredditId}`, { score: Date.now(), member: JSON.stringify(signal) });
+    await redis.zRemRangeByRank(`learning:signals:${subredditId}`, 0, -501);
+
+    // Per-author action history for future ban evasion
+    const authorKey = `author:actions:${subredditId}:${scoreRecord.authorName}`;
+    const existingRaw = await redis.get(authorKey);
+    const history: unknown[] = existingRaw ? JSON.parse(existingRaw) : [];
+    history.unshift({
+      postId: body.postId,
+      action: body.action,
+      score: originalScore,
+      fingerprint,
+      timestamp: Date.now(),
+    });
+    await redis.set(authorKey, JSON.stringify(history.slice(0, 50)));
   }
 
   await Promise.all([

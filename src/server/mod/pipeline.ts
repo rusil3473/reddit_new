@@ -1,6 +1,6 @@
-import { reddit } from '@devvit/web/server';
+import { reddit, redis } from '@devvit/web/server';
 import type { ActionRequest, ScoreContentRequest, ScoreRecord } from '../../shared/mod';
-import { scoreWithGemini } from './llm';
+import { scoreWithLearning, type LearningSignal } from './llm';
 import {
   isSiqPostId,
   incrementActionStats,
@@ -59,18 +59,27 @@ export const scoreContent = async (
 ): Promise<ScoreRecord> => {
   const existing = await readScoreRecord(subredditId, payload.postId);
   if (existing && payload.reportCount <= existing.reportCount) {
-    return existing;
+    const currentSignalCount = await redis.zCard(`learning:signals:${subredditId}`);
+    if (currentSignalCount - (existing.signalCountAtScoring ?? 0) <= 10) {
+      return existing;
+    }
   }
 
   const siqPost = await isSiqPostId(subredditId, payload.postId);
   const rules = await readRules(subredditId);
-  const modelResult = await scoreWithGemini(payload, rules);
+
+  const rawSignals = await redis.zRange(`learning:signals:${subredditId}`, 0, -1);
+  const pastSignals: LearningSignal[] = rawSignals
+    .map(s => { try { return JSON.parse(typeof s === 'string' ? s : s.member); } catch { return null; } })
+    .filter((s): s is LearningSignal => s !== null);
+
+  const modelResult = await scoreWithLearning(payload, rules, pastSignals);
   const scamOverride = detectCriticalScam(payload.title, payload.body);
 
   const forcedScore = scamOverride.hit ? Math.max(modelResult.score, 0.92) : modelResult.score;
   const forcedLabel = forcedScore >= 0.6 ? 'high_risk' : modelResult.label;
   const mergedReasons = scamOverride.hit
-    ? [...scamOverride.reasons, ...modelResult.reasons].slice(0, 4)
+    ? ['Safety override: critical scam pattern detected', ...scamOverride.reasons, ...modelResult.reasons].slice(0, 4)
     : modelResult.reasons;
   const forcedSuggestedAction = scamOverride.hit ? 'remove' : modelResult.suggested_action;
 
@@ -87,6 +96,8 @@ export const scoreContent = async (
     reasons: finalReasons,
     suggested_action: finalSuggestedAction,
     createdAt: Date.now(),
+    signalCountAtScoring: pastSignals.length,
+    confidence: modelResult.confidence,
   };
 
   await writeScoreRecord(record, { enqueue: !siqPost });

@@ -160,6 +160,8 @@ export const writeScoreRecord = async (
     reasons: JSON.stringify(record.reasons),
     suggested_action: record.suggested_action,
     createdAt: String(record.createdAt),
+    signalCountAtScoring: String(record.signalCountAtScoring ?? 0),
+    confidence: String(record.confidence ?? 0.4),
   });
 
   if (options?.enqueue !== false) {
@@ -219,6 +221,8 @@ export const readScoreRecord = async (
     reasons: parseJsonList<string>(raw.reasons ?? null),
     suggested_action: (raw.suggested_action as ScoreRecord['suggested_action']) ?? 'review',
     createdAt: parseNumber(raw.createdAt, Date.now()),
+    signalCountAtScoring: parseNumber(raw.signalCountAtScoring, 0),
+    confidence: parseNumber(raw.confidence, 0.4),
   };
 };
 
