@@ -157,9 +157,10 @@ api.get('/queue', async (c) => {
       };
     })
   );
-  posts.sort((a, b) => b.score - a.score);
-  await redis.set(keyQueueLength, String(posts.length));
-  return c.json({ type: 'QUEUE_POSTS_RESPONSE', posts });
+  const filtered = posts.filter((p) => !p.title.includes('Smart Intelligent Queue Dashboard'));
+  filtered.sort((a, b) => b.score - a.score);
+  await redis.set(keyQueueLength, String(filtered.length));
+  return c.json({ type: 'QUEUE_POSTS_RESPONSE', posts: filtered });
 });
 
 api.get('/escalated', async (c) => {
@@ -212,14 +213,16 @@ api.get('/stats', async (c) => {
   }
 
   const summary = await readSummaryStats(subredditId);
-  const [processedRaw, removedRaw, approvedRaw, reportedRaw, queueLenRaw] =
+  const [processedRaw, removedRaw, approvedRaw, reportedRaw] =
     await redis.mGet([
       keyProcessed,
       keyRemoved,
       keyApproved,
       keyReported,
-      keyQueueLength,
     ]);
+
+  const queue = await readQueueItems(subredditId, 200, 0);
+  const filteredCount = queue.filter((item) => !item.title.includes('Smart Intelligent Queue Dashboard')).length;
 
   const parsed = (value: string | null, fallback: number): number => {
     const n = Number.parseInt(value ?? '', 10);
@@ -231,7 +234,7 @@ api.get('/stats', async (c) => {
     processed: parsed(processedRaw ?? null, summary.totalProcessed),
     removed: parsed(removedRaw ?? null, summary.removedToday),
     approved: parsed(approvedRaw ?? null, summary.approvedToday),
-    inQueue: parsed(queueLenRaw ?? null, summary.queueCount),
+    inQueue: filteredCount,
     reported: parsed(reportedRaw ?? null, summary.reportedCount),
   });
 });

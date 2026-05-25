@@ -4,7 +4,7 @@ import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { apiClient } from './lib/apiClient';
 
-type TabKey = 'priority' | 'escalated' | 'reported' | 'audit' | 'rules';
+type TabKey = 'priority' | 'escalated' | 'reported' | 'processed' | 'audit' | 'rules';
 type FeedSort = 'risk_desc' | 'risk_asc' | 'newest';
 type ModAction = 'approve' | 'remove' | 'escalate';
 type Difficulty = 'easy' | 'medium' | 'hard' | 'legendary';
@@ -48,6 +48,7 @@ const tabs: Array<{ key: TabKey; label: string }> = [
   { key: 'priority', label: 'Priority Queue' },
   { key: 'escalated', label: 'Escalated Queue' },
   { key: 'reported', label: 'Reported Posts' },
+  { key: 'processed', label: 'Processed Reports' },
   { key: 'audit', label: 'Audit Log' },
   { key: 'rules', label: 'Rules' },
 ];
@@ -82,17 +83,19 @@ const App = () => {
   const [activeTab, setActiveTab] = useState<TabKey>('priority');
   const [queuePosts, setQueuePosts] = useState<QueuePost[]>([]);
   const [reportedPosts, setReportedPosts] = useState<QueuePost[]>([]);
+  const [processedPosts, setProcessedPosts] = useState<QueuePost[]>([]);
   const [escalatedPosts, setEscalatedPosts] = useState<QueuePost[]>([]);
   const [loadingEscalated, setLoadingEscalated] = useState(true);
   const [auditLog, setAuditLog] = useState<AuditItem[]>([]);
   const [stats, setStats] = useState({ processed: 0, removed: 0, approved: 0, inQueue: 0, reported: 0 });
-  const [feedSort, setFeedSort] = useState<FeedSort>('risk_desc');
+  const [feedSort, setFeedSort] = useState<FeedSort>('newest');
   const [auditFilter, setAuditFilter] = useState('');
   const [approveThreshold, setApproveThreshold] = useState(0.15);
   const [removeThreshold, setRemoveThreshold] = useState(0.85);
   const [rulesText, setRulesText] = useState('Be civil\nNo direct threats\nNo promotional spam\nRespect reporting process');
   const [loadingQueue, setLoadingQueue] = useState(true);
   const [loadingReported, setLoadingReported] = useState(true);
+  const [loadingProcessed, setLoadingProcessed] = useState(true);
   const [processingIds, setProcessingIds] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState<ModAction | null>(null);
@@ -134,7 +137,7 @@ const App = () => {
     setLoadingQueue(true);
     try {
       const response = await sendQueueMessage();
-      setQueuePosts(response.posts);
+      setQueuePosts(response.posts.filter((p) => !p.title.includes('Smart Intelligent Queue Dashboard')));
       setSelectedIds(new Set());
     } catch {
       setQueuePosts([]);
@@ -182,6 +185,54 @@ const App = () => {
     }
   };
 
+  const refreshProcessed = async (): Promise<void> => {
+    setLoadingProcessed(true);
+    try {
+      const res = await apiClient.request<{ success: boolean; posts: Array<{ meta: { postId: string; title: string; authorName: string; reportCount: number; lastReportedAt: number; processedAction?: string }; score?: { score: number; reasons: string[] } }> }>('/api/reported-posts?page=1&pageSize=50&sort=recent&status=processed');
+      const mapped = res.posts.map((row) => {
+        const score = row.score?.score ?? 0.5;
+        return {
+          id: row.meta.postId,
+          title: row.meta.title,
+          author: row.meta.authorName,
+          score,
+          difficulty: scoreToDifficulty(score),
+          reasons: row.score?.reasons ?? [row.meta.processedAction ?? 'reviewed'],
+          reportCount: row.meta.reportCount,
+          createdAt: new Date(row.meta.lastReportedAt).toISOString(),
+          type: 'post' as const,
+        };
+      });
+      setProcessedPosts(mapped);
+    } catch {
+      setProcessedPosts([]);
+    } finally {
+      setLoadingProcessed(false);
+    }
+  };
+
+  const refreshAudit = async (): Promise<void> => {
+    try {
+      const res = await apiClient.request<{ success: boolean; entries: Array<{ postId: string; postTitle: string; action: string; modId: string; timestamp: number; score: number; reasons: string[] }> }>('/api/audit?page=1&pageSize=50');
+      if (!res.entries) {
+        return;
+      }
+      const sorted = [...res.entries].sort((a, b) => b.timestamp - a.timestamp);
+      const filtered = sorted.filter((e) => !e.postTitle.includes('Smart Intelligent Queue Dashboard'));
+      const mapped = filtered.map((entry) => ({
+        ts: new Date(entry.timestamp).toLocaleString('en-US', { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+        mod: entry.modId.startsWith('u/') ? entry.modId : `u/${entry.modId}`,
+        title: entry.postTitle,
+        action: (entry.action === 'approve' ? 'approved' : entry.action === 'remove' ? 'removed' : 'escalated') as AuditItem['action'],
+        score: entry.score.toFixed(2),
+        reasons: entry.reasons,
+      }));
+      setAuditLog(mapped);
+    } catch {
+      addToast('Audit log fetch failed', 'error');
+    }
+  };
+
   const refreshStats = async (): Promise<void> => {
     try {
       const response = await sendStatsMessage();
@@ -206,7 +257,9 @@ const App = () => {
         }
         void refreshQueue();
         void refreshReported();
+        void refreshProcessed();
         void refreshEscalated();
+        void refreshAudit();
         void refreshStats();
       })();
     }, 0);
@@ -310,6 +363,7 @@ const App = () => {
       removePostsFromQueue([post.id]);
       addToast(`${actionLabels[action]}d 1 post`, 'success');
       void refreshStats();
+      void refreshAudit();
       if (action === 'escalate') void refreshEscalated();
     } catch {
       addToast('Action failed — try again', 'error');
@@ -328,6 +382,7 @@ const App = () => {
       setEscalatedPosts((prev) => prev.filter((p) => p.id !== post.id));
       addToast(`${actionLabels[action]}d 1 escalated post`, 'success');
       void refreshStats();
+      void refreshAudit();
     } catch {
       addToast('Action failed — try again', 'error');
     } finally {
@@ -351,6 +406,7 @@ const App = () => {
       removePostsFromQueue(ids);
       addToast(`${res.updated} posts ${action === 'approve' ? 'approved' : action === 'remove' ? 'removed' : 'escalated'}`, 'success');
       void refreshStats();
+      void refreshAudit();
       if (action === 'escalate') void refreshEscalated();
     } catch {
       addToast('Action failed — try again', 'error');
@@ -391,6 +447,7 @@ const App = () => {
         'success'
       );
       void refreshStats();
+      void refreshAudit();
     } catch {
       addToast('Auto action failed — try again', 'error');
     } finally {
@@ -420,22 +477,18 @@ const App = () => {
         {accessState === 'allowed' && (
           <>
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#22263A] px-4 py-3 md:px-5">
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-extrabold tracking-[0.08em] text-[#7C5CFC]">MODECULE</h1>
-            <span className="text-sm text-[#64748B]">r/modecule_dev</span>
-          </div>
-          <div className="flex items-center gap-2 text-sm">
-            <div className="grid h-8 w-8 place-items-center rounded-full border border-[#7C5CFC] text-xs text-[#C4B5FD]">RU</div>
-            <p className="font-semibold">u/rusil4421</p>
-          </div>
+          <h1 className="text-2xl font-extrabold tracking-[0.08em] text-[#7C5CFC]">MODECULE</h1>
+          <span className="text-sm text-[#64748B]">r/modecule_dev</span>
         </header>
 
-        <section className="grid gap-2 border-b border-[#22263A] px-4 py-3 sm:grid-cols-2 lg:grid-cols-5 md:px-5">
+        <section className="grid gap-2 border-b border-[#22263A] px-4 py-3 sm:grid-cols-2 lg:grid-cols-7 md:px-5">
           <StatCard value={String(stats.processed)} label="Processed" accent="text-[#F1F5F9]" />
           <StatCard value={String(stats.removed)} label="Removed today" accent="text-[#EF4444]" />
           <StatCard value={String(stats.approved)} label="Approved today" accent="text-[#22C55E]" />
-          <StatCard value={String(stats.inQueue)} label="In queue" accent="text-[#EF4444]" pulse={stats.inQueue > 10} />
-          <StatCard value={String(stats.reported)} label="Reported" accent="text-[#F59E0B]" />
+          <StatCard value={String(queuePosts.length)} label="In queue" accent="text-[#EF4444]" pulse={queuePosts.length > 10} />
+          <StatCard value={String(escalatedPosts.length)} label="Escalated" accent="text-[#7C5CFC]" />
+          <StatCard value={String(processedPosts.length)} label="Processed Reports" accent="text-[#64748B]" />
+          <StatCard value={String(reportedPosts.length)} label="Reported Queue" accent="text-[#F59E0B]" />
         </section>
 
         <nav className="border-b border-[#22263A] px-4 md:px-5">
@@ -452,7 +505,10 @@ const App = () => {
           {activeTab === 'priority' && (
             <div className="space-y-3 pb-20">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-2xl font-semibold">Case Feed ({sortedQueuePosts.length})</h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-2xl font-semibold">Case Feed ({sortedQueuePosts.length})</h2>
+                  <button type="button" onClick={() => void refreshQueue()} disabled={loadingQueue} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button>
+                </div>
                 <div className="flex items-center gap-2">
                   <select value={feedSort} onChange={(event) => setFeedSort(event.target.value as FeedSort)} className="min-w-52 rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-2 text-sm text-[#94A3B8] outline-none">
                     {sortOptions.map((option) => (
@@ -528,8 +584,8 @@ const App = () => {
               })}
 
               {selectedIds.size > 0 && (
-                <div className="sticky bottom-3 z-20 rounded-lg border border-[#2A2D3E] bg-[#13151f] px-5 py-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-[#2A2D3E] bg-[#13151f] px-5 py-3">
+                  <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-3 text-sm">
                       <p className="font-semibold text-white">{selectedIds.size} cases selected</p>
                       <button className="text-[#64748B] hover:text-[#F1F5F9]" onClick={selectAllVisible}>{allVisibleSelected ? 'Deselect all' : 'Select all'}</button>
@@ -615,6 +671,39 @@ const App = () => {
                     <button className="action-link text-[#22C55E]" onClick={() => void runSingleAction(post, 'approve')}>Approve</button>
                     <button className="action-link text-[#EF4444]" onClick={() => void runSingleAction(post, 'remove')}>Remove</button>
                     <button className="action-link text-[#7C5CFC]" onClick={() => void runSingleAction(post, 'escalate')}>Escalate</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'processed' && (
+            <div className="space-y-3">
+              {loadingProcessed && (
+                <div className="space-y-3">
+                  <SkeletonCard />
+                  <SkeletonCard />
+                  <SkeletonCard />
+                </div>
+              )}
+              {!loadingProcessed && processedPosts.length === 0 && (
+                <div className="stat-card grid place-items-center px-6 py-10 text-center">
+                  <p className="text-lg font-semibold">No processed reports yet</p>
+                  <p className="mt-1 text-sm text-[#64748B]">Approved or removed reports will appear here</p>
+                </div>
+              )}
+              {!loadingProcessed && processedPosts.map((post) => (
+                <article key={post.id} className="case-card hover-glow grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto]">
+                  <div className="space-y-3">
+                    <DifficultyBadge difficulty={post.difficulty} />
+                    <div>
+                      <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
+                      <p className="mt-1 text-sm text-[#64748B]">u/{post.author}</p>
+                    </div>
+                    <ScoreBar score={post.score} />
+                    <div className="flex flex-wrap gap-2">
+                      {post.reasons.map((reason) => <Chip key={`${post.id}-${reason}`} label={reason} />)}
+                    </div>
                   </div>
                 </article>
               ))}
