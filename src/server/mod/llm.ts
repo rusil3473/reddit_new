@@ -4,7 +4,7 @@
   ScoreContentRequest,
   SuggestedAction,
 } from '../../shared/mod';
-import { scoreLLM, type LLMScore } from './llm-router';
+import { scoreLLM, type LLMScore, type LLMExample } from './llm-router';
 
 export type LearningSignal = {
   fingerprint: string[];
@@ -179,53 +179,50 @@ export const applyLearningAdjustment = (
   return clampScore(baseScore + normalizedAdjustment);
 };
 
+/**
+ * Map a similar past signal into the LLMExample shape consumed by the prompt.
+ * Falls back to fingerprint-derived snippet for legacy signals that lack one.
+ */
+const signalToExample = (sim: SimilarSignal): LLMExample => {
+  const ageDays = (Date.now() - sim.signal.timestamp) / (1000 * 60 * 60 * 24);
+  const titleSnippet = sim.signal.titleSnippet
+    ?? `[legacy signal] tokens: ${sim.signal.fingerprint.slice(0, 6).join(', ')}`;
+  const bodySnippet = sim.signal.bodySnippet ?? '';
+  return {
+    action: sim.signal.action,
+    titleSnippet,
+    bodySnippet,
+    reasons: sim.signal.reasons ?? [],
+    similarity: sim.similarity,
+    ageDays,
+  };
+};
+
+const RETRIEVAL_K = 5;
+const RETRIEVAL_MIN_SIMILARITY = 0.10;
+
 export const scoreWithLearning = async (
   request: ScoreContentRequest,
   rules: ModerationRules,
   pastSignals: LearningSignal[]
 ): Promise<LLMScore> => {
-  const baseResult = await scoreLLM(request, rules);
-  const fingerprint = extractFingerprint(request.title, request.body);
-  const currentTrigrams = extractTrigrams(request.title, request.body);
+  const similar = findSimilarSignals(request.title, request.body, pastSignals, RETRIEVAL_K)
+    .filter((s) => s.similarity >= RETRIEVAL_MIN_SIMILARITY);
 
-  let adjustment = 0;
-  let totalWeight = 0;
+  const examples: LLMExample[] = similar.map(signalToExample);
 
-  for (const signal of pastSignals) {
-    const similarity = similarityToSignal(currentTrigrams, fingerprint, signal);
-    if (similarity >= 0.25) {
-      const ageInDays = (Date.now() - signal.timestamp) / (1000 * 60 * 60 * 24);
-      const decayFactor = Math.exp(-0.05 * ageInDays);
-      const weight = similarity * decayFactor * 0.15;
-      const direction = signal.action === 'remove' ? 1 : -1;
-      adjustment += direction * weight;
-      totalWeight += similarity * decayFactor;
-    }
-  }
+  const result = await scoreLLM(request, rules, examples.length > 0 ? examples : undefined);
 
-  const normalizedAdjustment = totalWeight > 0 ? adjustment / Math.max(totalWeight, 1) : 0;
-  const adjustedScore = clampScore(baseResult.score + normalizedAdjustment);
-
-  const reasons = [...baseResult.reasons];
-  if (Math.abs(normalizedAdjustment) > 0.05) {
-    reasons.push(normalizedAdjustment > 0 ? 'Similar to past moderated content' : 'Similar to past approved content');
-  }
-
-  const matchingSignalCount = pastSignals.filter((s) => similarityToSignal(currentTrigrams, fingerprint, s) >= 0.25).length;
-  const confidence = matchingSignalCount === 0
+  // Confidence reflects how much retrieval support the model had.
+  // 0 examples -> 0.4, 5 examples avg sim 0.6 -> ~0.85.
+  const avgSim = examples.length === 0
+    ? 0
+    : examples.reduce((acc, e) => acc + e.similarity, 0) / examples.length;
+  const confidence = examples.length === 0
     ? 0.4
-    : Math.min(0.4 + matchingSignalCount * 0.06, 0.95);
+    : Math.min(0.4 + examples.length * 0.06 + avgSim * 0.25, 0.95);
 
-  const label: RiskLabel = adjustedScore < 0.3 ? 'low_risk' : adjustedScore <= 0.6 ? 'borderline' : 'high_risk';
-  const suggested_action: SuggestedAction = adjustedScore < rules.autoApproveThreshold ? 'approve' : adjustedScore >= rules.autoRemoveThreshold ? 'remove' : 'review';
-
-  return {
-    score: adjustedScore,
-    label,
-    reasons: reasons.slice(0, 4),
-    suggested_action,
-    confidence,
-  };
+  return { ...result, confidence };
 };
 
 // TODO: Move these back to environment variables before production release.

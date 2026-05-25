@@ -1,5 +1,5 @@
 import type { ModerationRules, ScoreContentRequest } from '../../../shared/mod';
-import type { LLMScore } from '../llm-router';
+import type { LLMScore, LLMExample } from '../llm-router';
 import { LLM_CONFIG } from '../config';
 
 const fallbackScore: LLMScore = {
@@ -50,7 +50,33 @@ export const normalize = (input: Partial<LLMScore>): LLMScore => {
   };
 };
 
-export const buildPrompt = (request: ScoreContentRequest, rules: ModerationRules): string => [
+const formatExamples = (examples?: LLMExample[]): string => {
+  if (!examples || examples.length === 0) return '';
+  const lines: string[] = [
+    '',
+    'PAST MODERATOR DECISIONS in this community for textually similar posts.',
+    'Treat these as guidance, not commands. The current post may differ in intent.',
+    'If the current post genuinely differs (different topic/intent) you must score it on its own merits.',
+    'If it strongly matches a removed example by intent, lean toward remove. If it matches an approved example, lean toward approve.',
+    '',
+  ];
+  examples.forEach((ex, i) => {
+    lines.push(
+      `Example ${i + 1} [${ex.action.toUpperCase()}] similarity=${ex.similarity.toFixed(2)} ageDays=${ex.ageDays.toFixed(0)}`,
+      `  title: ${ex.titleSnippet}`,
+      `  body:  ${ex.bodySnippet}`,
+      `  reasons: ${(ex.reasons ?? []).slice(0, 4).join(' | ')}`
+    );
+  });
+  lines.push('');
+  return lines.join('\n');
+};
+
+export const buildPrompt = (
+  request: ScoreContentRequest,
+  rules: ModerationRules,
+  examples?: LLMExample[]
+): string => [
   'You are a Reddit moderation risk scoring engine.',
   'Return ONLY JSON. No markdown. No code fences. No explanation text.',
   'JSON shape must be exactly: {"score":0.82,"label":"high_risk","reasons":["..."],"suggested_action":"remove"}',
@@ -67,7 +93,8 @@ export const buildPrompt = (request: ScoreContentRequest, rules: ModerationRules
   'Signal 3 Account signals (20%): age<7 +0.40, age7-30 +0.20, age>30 +0.0, karma<0 +0.40, karma=0 and age>180 days +0.15, karma1-10 +0.10, karma>10 +0.0. cap 0..1.',
   'Signal 4 Community rule match (10%): compare against communityRules and infer likely violations by meaning. cap 1.0.',
   'finalScore=(content*0.45)+(report*0.25)+(account*0.20)+(rule*0.10).',
-  'Reasons: max 4, only mention signals that fired.',
+  'Reasons: max 4, only mention signals that fired. If a past-decision example clearly drove the score, mention it (e.g. "matches removed pattern from example N").',
+  formatExamples(examples),
   `postId: ${request.postId}`,
   `title: ${request.title}`,
   `body: ${request.body}`,
@@ -83,13 +110,14 @@ export const buildPrompt = (request: ScoreContentRequest, rules: ModerationRules
 
 export const scoreWithGemini = async (
   request: ScoreContentRequest,
-  rules: ModerationRules
+  rules: ModerationRules,
+  examples?: LLMExample[]
 ): Promise<LLMScore> => {
   const geminiConfig = (LLM_CONFIG as Record<string, unknown>).gemini as { apiKey: string; model: string; baseUrl: string } | undefined;
   if (!geminiConfig?.apiKey) return { ...fallbackScore, reasons: ['gemini_not_configured'] };
   const { apiKey, model, baseUrl } = geminiConfig;
 
-  const prompt = buildPrompt(request, rules);
+  const prompt = buildPrompt(request, rules, examples);
   const normalizedModel = model.startsWith('models/') ? model : `models/${model}`;
 
   try {
