@@ -132,8 +132,60 @@ api.get('/queue', async (c) => {
   }
 
   const queue = await readQueueItems(subredditId, 200, 0);
+
+  // Phase 3: lazy re-score. If the global signal count has moved more than
+  // RESCORE_THRESHOLD beyond an item's signalCountAtScoring, re-score it now.
+  // Cap at RESCORE_BUDGET per request to bound LLM cost.
+  const RESCORE_THRESHOLD = 5;
+  const RESCORE_BUDGET = 5;
+  const currentSignalCount = await redis.zCard(`learning:signals:${subredditId}`);
+
+  type StalePick = { postId: string; drift: number };
+  const stale: StalePick[] = [];
+  for (const item of queue) {
+    const rec = await readScoreRecord(subredditId, item.postId);
+    if (!rec) continue;
+    const drift = currentSignalCount - (rec.signalCountAtScoring ?? 0);
+    if (drift > RESCORE_THRESHOLD) {
+      stale.push({ postId: item.postId, drift });
+    }
+  }
+  // Re-score the staleest first
+  stale.sort((a, b) => b.drift - a.drift);
+  const rescoreTargets = stale.slice(0, RESCORE_BUDGET);
+  await Promise.all(
+    rescoreTargets.map(async ({ postId }) => {
+      const rec = await readScoreRecord(subredditId, postId);
+      if (!rec) return;
+      try {
+        await scoreContent(
+          subredditId,
+          {
+            postId: rec.postId,
+            title: rec.title,
+            body: rec.body,
+            authorName: rec.authorName,
+            accountAgeDays: rec.accountAgeDays,
+            karma: rec.karma,
+            reportCount: rec.reportCount,
+            priorFlagsInSub: rec.priorFlagsInSub,
+          },
+          { forceRescore: true }
+        );
+      } catch {
+        // Best-effort. Keep the old score on failure.
+      }
+    })
+  );
+
+  // Re-read the queue items so we pick up any updated scores from the
+  // ZSET that scoreContent rewrote during the lazy re-score.
+  const refreshedQueue = rescoreTargets.length > 0
+    ? await readQueueItems(subredditId, 200, 0)
+    : queue;
+
   const posts = await Promise.all(
-    queue.map(async (item) => {
+    refreshedQueue.map(async (item) => {
       const scoreRecord = await readScoreRecord(subredditId, item.postId);
       return {
         id: item.postId,

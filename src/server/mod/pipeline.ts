@@ -55,10 +55,11 @@ const removePost = async (tid: `t3_${string}`): Promise<void> => {
 
 export const scoreContent = async (
   subredditId: string,
-  payload: ScoreContentRequest
+  payload: ScoreContentRequest,
+  options?: { forceRescore?: boolean }
 ): Promise<ScoreRecord> => {
   const existing = await readScoreRecord(subredditId, payload.postId);
-  if (existing && payload.reportCount <= existing.reportCount) {
+  if (!options?.forceRescore && existing && payload.reportCount <= existing.reportCount) {
     const currentSignalCount = await redis.zCard(`learning:signals:${subredditId}`);
     if (currentSignalCount - (existing.signalCountAtScoring ?? 0) <= 10) {
       return existing;
