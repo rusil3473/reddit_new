@@ -3,7 +3,7 @@ import type { TriggerResponse } from '@devvit/web/shared';
 import { context } from '@devvit/web/server';
 import { createPost } from '../core/post';
 import { scoreContent } from '../mod/pipeline';
-import { addSiqPostId, incrementReportAndMeta } from '../mod/store';
+import { addSiqPostId, incrementReportAndMeta, isSiqPostId } from '../mod/store';
 import type { ScoreContentRequest } from '../../shared/mod';
 
 export const triggers = new Hono();
@@ -59,6 +59,11 @@ triggers.post('/on-post-create', async (c) => {
     const payload = toScorePayload(body);
     if (!payload || !context.subredditId) {
       return c.json<TriggerResponse>({ status: 'success', message: 'Skipped: missing post payload' });
+    }
+
+    const siq = await isSiqPostId(context.subredditId, payload.postId);
+    if (siq) {
+      return c.json<TriggerResponse>({ status: 'success', message: 'Skipped: SIQ dashboard post' });
     }
     
     await scoreContent(context.subredditId, payload);

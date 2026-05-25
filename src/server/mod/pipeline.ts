@@ -104,16 +104,6 @@ export const scoreContent = async (
   if (siqPost) {
     await reddit.approve(toThingId(payload.postId));
   }
-  await writeAuditEntry({
-    postId: record.postId,
-    subredditId,
-    action: 'score',
-    modId: 'system',
-    timestamp: Date.now(),
-    score: record.score,
-    reasons: record.reasons,
-    postTitle: record.title,
-  });
 
   return record;
 };
