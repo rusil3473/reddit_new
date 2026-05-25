@@ -1,6 +1,12 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
   "name": "modecule1",
+  "permissions": {
+    "http": {
+      "enable": true,
+      "domains": ["generativelanguage.googleapis.com", "router.huggingface.co", "huggingface.co", "api-inference.huggingface.co"]
+    }
+  },
   "post": {
     "dir": "dist/client",
     "entrypoints": {
