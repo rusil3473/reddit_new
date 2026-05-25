@@ -14,7 +14,7 @@ import type {
   ScoreContentResponse,
 } from '../../shared/mod';
 import { applyAction, scoreContent } from '../mod/pipeline';
-import { extractFingerprint, applyLearningAdjustment, type LearningSignal } from '../mod/llm';
+import { extractFingerprint, type LearningSignal } from '../mod/llm';
 import {
   readAuditEntriesPaged,
   readQueueItems,
@@ -131,24 +131,16 @@ api.get('/queue', async (c) => {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
 
-  const rawSignals = await redis.zRange(`learning:signals:${subredditId}`, 0, -1);
-  const pastSignals: LearningSignal[] = rawSignals
-    .map(s => { try { return JSON.parse(typeof s === 'string' ? s : s.member); } catch { return null; } })
-    .filter((s): s is LearningSignal => s !== null);
-
   const queue = await readQueueItems(subredditId, 200, 0);
   const posts = await Promise.all(
     queue.map(async (item) => {
       const scoreRecord = await readScoreRecord(subredditId, item.postId);
-      const adjustedScore = pastSignals.length > 0
-        ? applyLearningAdjustment(item.score, item.title, scoreRecord?.body ?? '', pastSignals)
-        : item.score;
       return {
         id: item.postId,
         title: item.title,
         author: item.authorName,
-        score: adjustedScore,
-        difficulty: difficultyFromScore(adjustedScore),
+        score: item.score,
+        difficulty: difficultyFromScore(item.score),
         reasons: item.reasons,
         reportCount: item.reportCount,
         createdAt: new Date(scoreRecord?.createdAt ?? Date.now()).toISOString(),
@@ -260,6 +252,7 @@ api.post('/mod-action', async (c) => {
       score: score?.score ?? 0.5,
       reasons: score?.reasons ?? ['manual_escalation'],
       postTitle: score?.title ?? body.postId,
+      scoreSource: score?.scoreSource,
     });
     return c.json({ success: true });
   }
@@ -339,6 +332,7 @@ api.post('/bulk-action', async (c) => {
         score: score?.score ?? 0.5,
         reasons: score?.reasons ?? ['manual_escalation'],
         postTitle: score?.title ?? postId,
+        scoreSource: score?.scoreSource,
       });
       updated += 1;
     }
@@ -515,6 +509,7 @@ api.post('/action/claim', async (c) => {
     score: score?.score ?? 0.5,
     reasons: ['claimed_for_review'],
     postTitle: score?.title ?? body.postId,
+    scoreSource: score?.scoreSource,
   });
 
   return c.json<ActionResponse>({ success: true });
@@ -539,6 +534,7 @@ api.post('/action/escalate', async (c) => {
     score: score?.score ?? 0.5,
     reasons: [body.reason || 'manual_escalation'],
     postTitle: score?.title ?? body.postId,
+    scoreSource: score?.scoreSource,
   });
 
   return c.json<ActionResponse>({ success: true });

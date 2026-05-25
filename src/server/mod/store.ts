@@ -162,6 +162,7 @@ export const writeScoreRecord = async (
     createdAt: String(record.createdAt),
     signalCountAtScoring: String(record.signalCountAtScoring ?? 0),
     confidence: String(record.confidence ?? 0.4),
+    scoreSource: record.scoreSource ?? 'gemini',
   });
 
   if (options?.enqueue !== false) {
@@ -223,6 +224,7 @@ export const readScoreRecord = async (
     createdAt: parseNumber(raw.createdAt, Date.now()),
     signalCountAtScoring: parseNumber(raw.signalCountAtScoring, 0),
     confidence: parseNumber(raw.confidence, 0.4),
+    scoreSource: (raw.scoreSource as ScoreRecord['scoreSource']) ?? 'gemini',
   };
 };
 

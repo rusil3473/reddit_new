@@ -1,5 +1,6 @@
 export type RiskLabel = 'low_risk' | 'borderline' | 'high_risk';
 export type SuggestedAction = 'approve' | 'review' | 'remove';
+export type ScoreSource = 'gemini' | 'gemini+learning' | 'safety_override' | 'siq_auto_approve';
 
 export type ModerationRules = {
   autoApproveThreshold: number;
@@ -24,6 +25,7 @@ export type ScoreRecord = {
   createdAt: number;
   signalCountAtScoring?: number;
   confidence?: number;
+  scoreSource?: ScoreSource;
 };
 
 export type ReportMeta = {
@@ -48,6 +50,7 @@ export type AuditEntry = {
   score: number;
   reasons: string[];
   postTitle: string;
+  scoreSource?: ScoreSource;
 };
 
 export type QueueItem = {

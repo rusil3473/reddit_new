@@ -1,5 +1,5 @@
 import { reddit, redis } from '@devvit/web/server';
-import type { ActionRequest, ScoreContentRequest, ScoreRecord } from '../../shared/mod';
+import type { ActionRequest, ScoreContentRequest, ScoreRecord, ScoreSource } from '../../shared/mod';
 import { scoreWithLearning, type LearningSignal } from './llm';
 import {
   isSiqPostId,
@@ -88,6 +88,14 @@ export const scoreContent = async (
     ? ['siq_dashboard_post_auto_approved']
     : mergedReasons;
 
+  const scoreSource: ScoreSource = siqPost
+    ? 'siq_auto_approve'
+    : scamOverride.hit
+      ? 'safety_override'
+      : pastSignals.length > 0
+        ? 'gemini+learning'
+        : 'gemini';
+
   const record: ScoreRecord = {
     ...payload,
     subredditId,
@@ -98,6 +106,7 @@ export const scoreContent = async (
     createdAt: Date.now(),
     signalCountAtScoring: pastSignals.length,
     confidence: modelResult.confidence,
+    scoreSource,
   };
 
   await writeScoreRecord(record, { enqueue: !siqPost });
@@ -135,6 +144,7 @@ export const applyAction = async (
         score: score?.score ?? 0.5,
         reasons: score?.reasons ?? [input.reason],
         postTitle: score?.title ?? input.postId,
+        scoreSource: score?.scoreSource,
       }),
     ]);
 
