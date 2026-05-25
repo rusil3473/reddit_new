@@ -93,3 +93,8 @@
 
 - Prefer false positives over false negatives for critical scam classes.
 - Safer moderation defaults reduce community harm.
+
+
+-git commit 
+-Change score in audit + five history to gemini for better scoring 
+-ban evasion dashboard modification UI+boht sara logic change 
