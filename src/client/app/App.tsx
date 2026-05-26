@@ -16,6 +16,7 @@ import {
 } from './constants';
 import { formatNow } from './utils';
 import { Chip } from './components/Chip';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import { PostCard } from './components/PostCard';
 import { ScoreBar } from './components/ScoreBar';
 import { SkeletonCard } from './components/SkeletonCard';
@@ -47,6 +48,12 @@ export const App = () => {
   const [rulesText, setRulesText] = useState('Be civil\nNo direct threats\nNo promotional spam\nRespect reporting process');
   const [savingRules, setSavingRules] = useState(false);
   const [backfillingBanSignals, setBackfillingBanSignals] = useState(false);
+  const [banDialogOpen, setBanDialogOpen] = useState(false);
+  const [banDurationDays, setBanDurationDays] = useState<number | ''>(''); // '' = permanent
+  const [banReason, setBanReason] = useState('');
+  const [banSubmitting, setBanSubmitting] = useState(false);
+  const [unbanDialogOpen, setUnbanDialogOpen] = useState(false);
+  const [unbanSubmitting, setUnbanSubmitting] = useState(false);
   const [loadingQueue, setLoadingQueue] = useState(true);
   const [rescoring, setRescoring] = useState<Record<string, boolean>>({});
   const [loadingReported, setLoadingReported] = useState(true);
@@ -263,6 +270,64 @@ export const App = () => {
       addToast('Backfill failed', 'error');
     } finally {
       setBackfillingBanSignals(false);
+    }
+  };
+
+  const submitBanUser = async (): Promise<void> => {
+    if (!viewingUser) return;
+    setBanSubmitting(true);
+    try {
+      const body: { username: string; durationDays?: number; reason?: string } = {
+        username: viewingUser,
+      };
+      if (typeof banDurationDays === 'number' && banDurationDays > 0) {
+        body.durationDays = banDurationDays;
+      }
+      const trimmedReason = banReason.trim();
+      if (trimmedReason.length > 0) {
+        body.reason = trimmedReason;
+      }
+      const res = await apiClient.request<{ success: boolean; seeded: number }>(
+        '/api/ban-user',
+        { method: 'POST', body: JSON.stringify(body) }
+      );
+      if (res.success) {
+        addToast(`Banned u/${viewingUser} (${res.seeded} signals seeded)`, 'success');
+        setBanDialogOpen(false);
+        setBanDurationDays('');
+        setBanReason('');
+        await reloadUserStats();
+        void refreshQueue();
+      } else {
+        addToast('Ban failed', 'error');
+      }
+    } catch {
+      addToast('Ban failed', 'error');
+    } finally {
+      setBanSubmitting(false);
+    }
+  };
+
+  const submitUnbanUser = async (): Promise<void> => {
+    if (!viewingUser) return;
+    setUnbanSubmitting(true);
+    try {
+      const res = await apiClient.request<{ success: boolean; cleared: number }>(
+        '/api/unban-user',
+        { method: 'POST', body: JSON.stringify({ username: viewingUser }) }
+      );
+      if (res.success) {
+        addToast(`Unbanned u/${viewingUser} (${res.cleared} signals cleared)`, 'success');
+        setUnbanDialogOpen(false);
+        await reloadUserStats();
+        void refreshQueue();
+      } else {
+        addToast('Unban failed', 'error');
+      }
+    } catch {
+      addToast('Unban failed', 'error');
+    } finally {
+      setUnbanSubmitting(false);
     }
   };
 
@@ -503,9 +568,35 @@ export const App = () => {
           <>
         {viewingUser ? (
           <div className="p-4 md:p-5 space-y-4">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <button type="button" onClick={() => closeUserStats()} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] hover:text-white">← Back</button>
               <h2 className="text-2xl font-bold">u/{viewingUser}</h2>
+              {userStats?.isBanned && (
+                <span className="rounded-full border border-[#EF4444]/40 bg-[#EF4444]/15 px-2 py-0.5 text-xs font-semibold text-[#FCA5A5]">
+                  Banned
+                </span>
+              )}
+              <div className="ml-auto">
+                {userStats && (userStats.isBanned ? (
+                  <button
+                    type="button"
+                    onClick={() => setUnbanDialogOpen(true)}
+                    disabled={loadingUserStats}
+                    className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50"
+                  >
+                    Unban user
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setBanDialogOpen(true)}
+                    disabled={loadingUserStats}
+                    className="rounded-md border border-[#EF4444]/40 bg-[#EF4444]/15 px-3 py-1.5 text-sm font-semibold text-[#FCA5A5] transition hover:brightness-110 disabled:opacity-50"
+                  >
+                    Ban user
+                  </button>
+                ))}
+              </div>
             </div>
             {loadingUserStats && <div className="space-y-3"><SkeletonCard /><SkeletonCard /></div>}
             {!loadingUserStats && userStats && (
@@ -904,6 +995,88 @@ export const App = () => {
           </>
         )}
       </div>
+
+      <ConfirmDialog
+        open={banDialogOpen}
+        title={viewingUser ? `Ban u/${viewingUser}?` : 'Ban user?'}
+        description={
+          <>
+            <p>
+              This will ban the user on Reddit and seed the ban-evasion corpus
+              from their previously-removed posts in this subreddit.
+            </p>
+            <p className="mt-2 text-xs text-[#64748B]">
+              The Reddit ban happens first — if it fails (e.g. permissions),
+              no local state is changed.
+            </p>
+          </>
+        }
+        confirmLabel="Ban user"
+        tone="danger"
+        busy={banSubmitting}
+        onCancel={() => {
+          if (banSubmitting) return;
+          setBanDialogOpen(false);
+          setBanDurationDays('');
+          setBanReason('');
+        }}
+        onConfirm={() => void submitBanUser()}
+      >
+        <label className="block text-sm font-semibold text-[#F1F5F9]">
+          Duration (days)
+          <input
+            type="number"
+            min={0}
+            max={999}
+            placeholder="Leave empty for permanent"
+            value={banDurationDays === '' ? '' : banDurationDays}
+            onChange={(event) => {
+              const v = event.target.value;
+              if (v === '') {
+                setBanDurationDays('');
+                return;
+              }
+              const n = Number.parseInt(v, 10);
+              if (Number.isFinite(n)) setBanDurationDays(Math.max(0, Math.min(999, n)));
+            }}
+            className="mt-1 w-full rounded-md border border-[#2A2D3E] bg-[#0F1117] px-3 py-2 text-sm text-[#F1F5F9] outline-none placeholder:text-[#64748B] focus:border-[#7C5CFC]"
+          />
+          <span className="mt-1 block text-xs font-normal text-[#64748B]">
+            Empty or 0 = permanent ban. Max 999 days.
+          </span>
+        </label>
+        <label className="block text-sm font-semibold text-[#F1F5F9]">
+          Reason (optional)
+          <textarea
+            value={banReason}
+            onChange={(event) => setBanReason(event.target.value)}
+            placeholder="Visible in the modlog"
+            rows={2}
+            maxLength={300}
+            className="mt-1 w-full rounded-md border border-[#2A2D3E] bg-[#0F1117] px-3 py-2 text-sm text-[#F1F5F9] outline-none placeholder:text-[#64748B] focus:border-[#7C5CFC]"
+          />
+        </label>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={unbanDialogOpen}
+        title={viewingUser ? `Unban u/${viewingUser}?` : 'Unban user?'}
+        description={
+          <p>
+            This will unban the user on Reddit and clear their entries from
+            the ban-evasion corpus, so future scoring stops matching against
+            this user.
+          </p>
+        }
+        confirmLabel="Unban user"
+        tone="primary"
+        busy={unbanSubmitting}
+        onCancel={() => {
+          if (unbanSubmitting) return;
+          setUnbanDialogOpen(false);
+        }}
+        onConfirm={() => void submitUnbanUser()}
+      />
 
       <div className="fixed right-4 top-4 z-50 space-y-2">
         {toasts.map((toast) => (

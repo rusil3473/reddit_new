@@ -6,6 +6,7 @@ import { apiClient } from '../../lib/apiClient';
 // hook is self-contained.
 type UserStatsResponse = {
   success: boolean;
+  isBanned: boolean;
   counts: {
     approved: number;
     removed: number;
@@ -26,7 +27,7 @@ type UserStatsResponse = {
   }>;
 };
 
-export type UserStats = Pick<UserStatsResponse, 'counts' | 'posts' | 'reportedPosts'>;
+export type UserStats = Pick<UserStatsResponse, 'counts' | 'posts' | 'reportedPosts' | 'isBanned'>;
 
 export type UserStatsTab = 'approved' | 'removed' | 'reportsReceived';
 
@@ -54,7 +55,12 @@ export const useUserStats = ({ onError }: UseUserStatsArgs) => {
       const res = await apiClient.request<UserStatsResponse>(
         `/api/user-stats?username=${encodeURIComponent(username)}`
       );
-      setUserStats({ counts: res.counts, posts: res.posts, reportedPosts: res.reportedPosts });
+      setUserStats({
+        counts: res.counts,
+        posts: res.posts,
+        reportedPosts: res.reportedPosts,
+        isBanned: res.isBanned,
+      });
     } catch {
       onError('Failed to load user stats');
       setViewingUser(null);
