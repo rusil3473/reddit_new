@@ -3,82 +3,27 @@
 import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { apiClient } from './lib/apiClient';
-
-type TabKey = 'priority' | 'escalated' | 'reported' | 'processed' | 'audit' | 'rules';
-type FeedSort = 'risk_desc' | 'risk_asc' | 'newest';
-type ModAction = 'approve' | 'remove' | 'escalate';
-type Difficulty = 'easy' | 'medium' | 'hard' | 'legendary';
-
-type QueuePost = {
-  id: string;
-  title: string;
-  author: string;
-  score: number;
-  difficulty: Difficulty;
-  reasons: string[];
-  reportCount: number;
-  createdAt: string;
-  type: 'post' | 'comment';
-};
-
-type QueueResponse = { type: 'QUEUE_POSTS_RESPONSE'; posts: QueuePost[] };
-type StatsResponse = {
-  type: 'STATS_RESPONSE';
-  processed: number;
-  removed: number;
-  approved: number;
-  inQueue: number;
-  reported: number;
-};
-
-type AuditItem = {
-  postId: string;
-  ts: string;
-  mod: string;
-  title: string;
-  action: 'approved' | 'removed' | 'escalated';
-  score: string;
-  reasons: string[];
-};
-
-type ToastTone = 'success' | 'error' | 'info';
-type Toast = { id: number; text: string; tone: ToastTone };
-type AccessResponse = { success: boolean; isModerator: boolean };
-
-const tabs: Array<{ key: TabKey; label: string }> = [
-  { key: 'priority', label: 'Priority Queue' },
-  { key: 'escalated', label: 'Escalated Queue' },
-  { key: 'reported', label: 'Reported Posts' },
-  { key: 'processed', label: 'Processed Reports' },
-  { key: 'audit', label: 'Audit Log' },
-  { key: 'rules', label: 'Rules' },
-];
-
-const sortOptions: Array<{ value: FeedSort; label: string }> = [
-  { value: 'risk_desc', label: 'Sort by: Risk score' },
-  { value: 'risk_asc', label: 'Sort by: Lowest risk' },
-  { value: 'newest', label: 'Sort by: Newest' },
-];
-
-const actionLabels: Record<ModAction, string> = {
-  approve: 'Approve',
-  remove: 'Remove',
-  escalate: 'Escalate',
-};
-
-const difficultyClass: Record<Difficulty, string> = {
-  easy: 'bg-[#22C55E]/20 text-[#86EFAC] border border-[#22C55E]/30',
-  medium: 'bg-[#F59E0B]/20 text-[#FCD34D] border border-[#F59E0B]/30',
-  hard: 'bg-[#EF4444]/20 text-[#FCA5A5] border border-[#EF4444]/30',
-  legendary: 'legend-pill bg-[#7C5CFC]/20 text-[#C4B5FD] border border-[#7C5CFC]/35',
-};
-
-const difficultyText: Record<Difficulty, string> = {
-  easy: 'EASY',
-  medium: 'MEDIUM',
-  hard: 'HARD',
-  legendary: 'LEGENDARY',
-};
+import type {
+  AccessResponse,
+  AuditItem,
+  Difficulty,
+  FeedSort,
+  ModAction,
+  QueuePost,
+  QueueResponse,
+  StatsResponse,
+  Toast,
+  ToastTone,
+  TabKey,
+} from './app/types';
+import {
+  actionLabels,
+  difficultyClass,
+  difficultyText,
+  sortOptions,
+  tabs,
+} from './app/constants';
+import { formatNow, scoreToDifficulty } from './app/utils';
 
 const App = () => {
   const [activeTab, setActiveTab] = useState<TabKey>('priority');
@@ -951,30 +896,6 @@ const App = () => {
       </div>
     </main>
   );
-};
-
-const formatNow = (): string => {
-  const now = new Date();
-  return now.toLocaleString('en-US', {
-    month: 'short',
-    day: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-};
-
-const scoreToDifficulty = (score: number): Difficulty => {
-  if (score < 0.3) {
-    return 'easy';
-  }
-  if (score <= 0.6) {
-    return 'medium';
-  }
-  if (score <= 0.85) {
-    return 'hard';
-  }
-  return 'legendary';
 };
 
 const StatCard = ({ value, label, accent, pulse = false }: { value: string; label: string; accent: string; pulse?: boolean }) => (
