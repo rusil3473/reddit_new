@@ -6,7 +6,6 @@ import { apiClient } from './lib/apiClient';
 import type {
   AccessResponse,
   AuditItem,
-  Difficulty,
   FeedSort,
   ModAction,
   QueuePost,
@@ -18,12 +17,16 @@ import type {
 } from './app/types';
 import {
   actionLabels,
-  difficultyClass,
-  difficultyText,
   sortOptions,
   tabs,
 } from './app/constants';
 import { formatNow, scoreToDifficulty } from './app/utils';
+import { Chip } from './app/components/Chip';
+import { DifficultyBadge } from './app/components/DifficultyBadge';
+import { ScoreBar } from './app/components/ScoreBar';
+import { SkeletonCard } from './app/components/SkeletonCard';
+import { SliderField } from './app/components/SliderField';
+import { StatCard } from './app/components/StatCard';
 
 const App = () => {
   const [activeTab, setActiveTab] = useState<TabKey>('priority');
@@ -897,62 +900,6 @@ const App = () => {
     </main>
   );
 };
-
-const StatCard = ({ value, label, accent, pulse = false }: { value: string; label: string; accent: string; pulse?: boolean }) => (
-  <div className={`stat-card hover-glow px-3 py-2.5 ${pulse ? 'queue-pulse' : ''}`}>
-    <p className="text-xs text-[#64748B]">{label}</p>
-    <p className={`mt-1 text-3xl leading-none font-bold ${accent}`}>{value}</p>
-  </div>
-);
-
-const DifficultyBadge = ({ difficulty }: { difficulty: Difficulty }) => (
-  <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${difficultyClass[difficulty]}`}>{difficultyText[difficulty]}</span>
-);
-
-const ScoreBar = ({ score }: { score: number }) => {
-  const tone = score < 0.3 ? 'bg-[#22C55E]' : score <= 0.7 ? 'bg-[#F59E0B]' : 'bg-[#EF4444]';
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-[0.16em]">
-        <span className="text-[#22C55E]">0.00 Approveable</span>
-        <span className="text-[#EF4444]">1.00 Reject</span>
-      </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-[#2A2D3E]">
-        <div
-          className={`h-full rounded-full transition-all duration-300 ${tone}`}
-          style={{ width: `${Math.max(0, Math.min(100, score * 100))}%` }}
-        />
-      </div>
-      <p className="mt-1 text-right text-xs text-[#64748B]">Reject chance: {score.toFixed(2)}</p>
-    </div>
-  );
-};
-
-const Chip = ({ label }: { label: string }) => (
-  <span className="rounded-full border border-[#2A2D3E] bg-[#252A3A]/45 px-2 py-0.5 text-xs text-[#94A3B8]">{label}</span>
-);
-
-const SkeletonCard = () => (
-  <div className="case-card p-4">
-    <div className="skeleton-pulse h-5 w-32 rounded" />
-    <div className="mt-3 skeleton-pulse h-6 w-3/4 rounded" />
-    <div className="mt-2 skeleton-pulse h-4 w-1/3 rounded" />
-    <div className="mt-4 skeleton-pulse h-2 w-full rounded" />
-    <div className="mt-3 flex gap-2">
-      <div className="skeleton-pulse h-5 w-20 rounded-full" />
-      <div className="skeleton-pulse h-5 w-24 rounded-full" />
-      <div className="skeleton-pulse h-5 w-16 rounded-full" />
-    </div>
-  </div>
-);
-
-const SliderField = ({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) => (
-  <label className="block text-sm font-semibold">
-    {label}
-    <input type="range" min="0" max="1" step="0.01" value={value} onChange={(event) => onChange(Number.parseFloat(event.target.value))} className="modecule-slider mt-2 w-full" />
-    <input type="number" min="0" max="1" step="0.01" value={value} onChange={(event) => onChange(Number.parseFloat(event.target.value) || 0)} className="mt-2 w-full rounded-lg border border-[#2A2D3E] bg-[#0F1117] px-3 py-2 text-sm" />
-  </label>
-);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
