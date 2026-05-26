@@ -109,6 +109,7 @@ type QueueApiPost = {
   createdAt: string;
   type: 'post' | 'comment';
   confidence: number;
+  banEvasion?: { matchedAuthor: string; similarity: number };
 };
 
 api.get('/queue', async (c) => {
@@ -183,6 +184,12 @@ api.get('/queue', async (c) => {
         createdAt: new Date(scoreRecord?.createdAt ?? Date.now()).toISOString(),
         type: 'post' as const,
         confidence: scoreRecord?.confidence ?? 0.4,
+        banEvasion: scoreRecord?.banEvasionMatch
+          ? {
+              matchedAuthor: scoreRecord.banEvasionMatch.matchedAuthor,
+              similarity: scoreRecord.banEvasionMatch.similarity,
+            }
+          : undefined,
       };
     })
   );
@@ -198,17 +205,28 @@ api.get('/escalated', async (c) => {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
   const items = await readEscalatedPosts(subredditId);
-  const posts: QueueApiPost[] = items.map((item) => ({
-    id: item.postId,
-    title: item.title,
-    author: item.authorName,
-    score: item.score,
-    reasons: item.reasons,
-    reportCount: item.reportCount,
-    createdAt: new Date().toISOString(),
-    type: 'post',
-    confidence: 0.4,
-  }));
+  const posts: QueueApiPost[] = await Promise.all(
+    items.map(async (item) => {
+      const scoreRecord = await readScoreRecord(subredditId, item.postId);
+      return {
+        id: item.postId,
+        title: item.title,
+        author: item.authorName,
+        score: item.score,
+        reasons: item.reasons,
+        reportCount: item.reportCount,
+        createdAt: new Date().toISOString(),
+        type: 'post' as const,
+        confidence: 0.4,
+        banEvasion: scoreRecord?.banEvasionMatch
+          ? {
+              matchedAuthor: scoreRecord.banEvasionMatch.matchedAuthor,
+              similarity: scoreRecord.banEvasionMatch.similarity,
+            }
+          : undefined,
+      };
+    })
+  );
   return c.json({ type: 'ESCALATED_POSTS_RESPONSE', posts });
 });
 

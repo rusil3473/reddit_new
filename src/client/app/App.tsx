@@ -16,6 +16,7 @@ import {
 } from './constants';
 import { formatNow } from './utils';
 import { Chip } from './components/Chip';
+import { BanEvasionChip } from './components/BanEvasionChip';
 import { ScoreBar } from './components/ScoreBar';
 import { SkeletonCard } from './components/SkeletonCard';
 import { SliderField } from './components/SliderField';
@@ -707,9 +708,18 @@ export const App = () => {
                       </div>
                       <ScoreBar score={post.score} />
                       <div className="flex flex-wrap gap-2">
-                        {post.reasons.map((reason) => (
-                          <Chip key={`${post.id}-${reason}`} label={reason} />
-                        ))}
+                        {post.banEvasion && (
+                          <BanEvasionChip
+                            matchedAuthor={post.banEvasion.matchedAuthor}
+                            similarity={post.banEvasion.similarity}
+                            onAuthorClick={(author) => void openUserStats(author)}
+                          />
+                        )}
+                        {post.reasons
+                          .filter((reason) => !(post.banEvasion && reason.startsWith('Possible ban evasion')))
+                          .map((reason) => (
+                            <Chip key={`${post.id}-${reason}`} label={reason} />
+                          ))}
                       </div>
                     </div>
 
@@ -767,7 +777,16 @@ export const App = () => {
                     </div>
                     <ScoreBar score={post.score} />
                     <div className="flex flex-wrap gap-2">
-                      {post.reasons.map((reason) => <Chip key={`${post.id}-${reason}`} label={reason} />)}
+                      {post.banEvasion && (
+                        <BanEvasionChip
+                          matchedAuthor={post.banEvasion.matchedAuthor}
+                          similarity={post.banEvasion.similarity}
+                          onAuthorClick={(author) => void openUserStats(author)}
+                        />
+                      )}
+                      {post.reasons
+                        .filter((reason) => !(post.banEvasion && reason.startsWith('Possible ban evasion')))
+                        .map((reason) => <Chip key={`${post.id}-${reason}`} label={reason} />)}
                     </div>
                   </div>
                   <div className="relative flex items-start justify-end gap-2 text-sm lg:flex-col lg:text-right">

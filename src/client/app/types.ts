@@ -19,6 +19,10 @@ export type QueuePost = {
   reportCount: number;
   createdAt: string;
   type: 'post' | 'comment';
+  banEvasion?: {
+    matchedAuthor: string;
+    similarity: number;
+  };
 };
 
 export type QueueResponse = { type: 'QUEUE_POSTS_RESPONSE'; posts: QueuePost[] };
