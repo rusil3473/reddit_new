@@ -90,6 +90,11 @@ const App = () => {
   const [auditLog, setAuditLog] = useState<AuditItem[]>([]);
   const [stats, setStats] = useState({ processed: 0, removed: 0, approved: 0, inQueue: 0, reported: 0 });
   const [feedSort, setFeedSort] = useState<FeedSort>('newest');
+  const [escalatedSort, setEscalatedSort] = useState<FeedSort>('risk_desc');
+  const [reportedSort, setReportedSort] = useState<FeedSort>('risk_desc');
+  const [processedSort, setProcessedSort] = useState<FeedSort>('newest');
+  const [userApprovedSort, setUserApprovedSort] = useState<FeedSort>('newest');
+  const [userRemovedSort, setUserRemovedSort] = useState<FeedSort>('newest');
   const [auditFilter, setAuditFilter] = useState('');
   const [approveThreshold, setApproveThreshold] = useState(0.15);
   const [removeThreshold, setRemoveThreshold] = useState(0.85);
@@ -313,17 +318,22 @@ const App = () => {
 
   const sortedQueuePosts = useMemo(() => {
     const copy = [...queuePosts];
-    if (feedSort === 'risk_desc') {
-      copy.sort((a, b) => b.score - a.score);
-      return copy;
-    }
-    if (feedSort === 'risk_asc') {
-      copy.sort((a, b) => a.score - b.score);
-      return copy;
-    }
+    if (feedSort === 'risk_desc') { copy.sort((a, b) => b.score - a.score); return copy; }
+    if (feedSort === 'risk_asc') { copy.sort((a, b) => a.score - b.score); return copy; }
     copy.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
     return copy;
   }, [feedSort, queuePosts]);
+
+  const sortPosts = (posts: QueuePost[], sort: FeedSort): QueuePost[] => {
+    const copy = [...posts];
+    if (sort === 'risk_desc') return copy.sort((a, b) => b.score - a.score);
+    if (sort === 'risk_asc') return copy.sort((a, b) => a.score - b.score);
+    return copy.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  };
+
+  const sortedEscalated = useMemo(() => sortPosts(escalatedPosts, escalatedSort), [escalatedSort, escalatedPosts]);
+  const sortedReported = useMemo(() => sortPosts(reportedPosts, reportedSort), [reportedSort, reportedPosts]);
+  const sortedProcessed = useMemo(() => sortPosts(processedPosts, processedSort), [processedSort, processedPosts]);
 
   const filteredAudit = useMemo(() => {
     const needle = auditFilter.trim().toLowerCase();
@@ -541,7 +551,8 @@ const App = () => {
 
                 {userTab === 'approved' && (
                   <div className="space-y-2">
-                    {userStats.posts.approved.map((p) => (
+                    <div className="flex items-center gap-2"><select value={userApprovedSort} onChange={(e) => setUserApprovedSort(e.target.value as FeedSort)} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
+                    {[...userStats.posts.approved].sort((a, b) => userApprovedSort === 'risk_desc' ? b.score - a.score : userApprovedSort === 'risk_asc' ? a.score - b.score : b.timestamp - a.timestamp).map((p) => (
                       <article key={p.postId} className="case-card p-3 grid gap-3 lg:grid-cols-[1fr_auto]">
                         <div className="space-y-2">
                           <h4 className="font-semibold">{p.title}</h4>
@@ -566,7 +577,8 @@ const App = () => {
 
                 {userTab === 'removed' && (
                   <div className="space-y-2">
-                    {userStats.posts.removed.map((p) => (
+                    <div className="flex items-center gap-2"><select value={userRemovedSort} onChange={(e) => setUserRemovedSort(e.target.value as FeedSort)} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
+                    {[...userStats.posts.removed].sort((a, b) => userRemovedSort === 'risk_desc' ? b.score - a.score : userRemovedSort === 'risk_asc' ? a.score - b.score : b.timestamp - a.timestamp).map((p) => (
                       <article key={p.postId} className="case-card p-3 grid gap-3 lg:grid-cols-[1fr_auto]">
                         <div className="space-y-2">
                           <h4 className="font-semibold">{p.title}</h4>
@@ -773,7 +785,7 @@ const App = () => {
 
           {activeTab === 'escalated' && (
             <div className="space-y-3">
-              <div className="flex items-center gap-2"><h2 className="text-lg font-semibold">Escalated Queue</h2><button type="button" onClick={() => void refreshEscalated()} disabled={loadingEscalated} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button></div>
+              <div className="flex items-center gap-2"><h2 className="text-lg font-semibold">Escalated Queue</h2><button type="button" onClick={() => void refreshEscalated()} disabled={loadingEscalated} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button><select value={escalatedSort} onChange={(e) => setEscalatedSort(e.target.value as FeedSort)} className="ml-auto rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
               {loadingEscalated && (
                 <div className="space-y-3">
                   <SkeletonCard />
@@ -786,7 +798,7 @@ const App = () => {
                   <p className="mt-1 text-sm text-[#64748B]">Posts escalated for review will appear here</p>
                 </div>
               )}
-              {!loadingEscalated && escalatedPosts.map((post) => (
+              {!loadingEscalated && sortedEscalated.map((post) => (
                 <article key={post.id} className="case-card hover-glow grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto]">
                   <div className="space-y-3">
                     <DifficultyBadge difficulty={post.difficulty} />
@@ -811,7 +823,7 @@ const App = () => {
 
           {activeTab === 'reported' && (
             <div className="space-y-3">
-              <div className="flex items-center gap-2"><h2 className="text-lg font-semibold">Reported Posts</h2><button type="button" onClick={() => void refreshReported()} disabled={loadingReported} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button></div>
+              <div className="flex items-center gap-2"><h2 className="text-lg font-semibold">Reported Posts</h2><button type="button" onClick={() => void refreshReported()} disabled={loadingReported} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button><select value={reportedSort} onChange={(e) => setReportedSort(e.target.value as FeedSort)} className="ml-auto rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
               {loadingReported && (
                 <div className="space-y-3">
                   <SkeletonCard />
@@ -825,7 +837,7 @@ const App = () => {
                   <p className="mt-1 text-sm text-[#64748B]">New posts will appear here automatically</p>
                 </div>
               )}
-              {!loadingReported && reportedPosts.map((post) => (
+              {!loadingReported && sortedReported.map((post) => (
                 <article key={post.id} className="case-card hover-glow grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto]">
                   <div className="space-y-3">
                     <DifficultyBadge difficulty={post.difficulty} />
@@ -850,7 +862,7 @@ const App = () => {
 
           {activeTab === 'processed' && (
             <div className="space-y-3">
-              <div className="flex items-center gap-2"><h2 className="text-lg font-semibold">Processed Reports</h2><button type="button" onClick={() => void refreshProcessed()} disabled={loadingProcessed} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button></div>
+              <div className="flex items-center gap-2"><h2 className="text-lg font-semibold">Processed Reports</h2><button type="button" onClick={() => void refreshProcessed()} disabled={loadingProcessed} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button><select value={processedSort} onChange={(e) => setProcessedSort(e.target.value as FeedSort)} className="ml-auto rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
               {loadingProcessed && (
                 <div className="space-y-3">
                   <SkeletonCard />
@@ -864,7 +876,7 @@ const App = () => {
                   <p className="mt-1 text-sm text-[#64748B]">Approved or removed reports will appear here</p>
                 </div>
               )}
-              {!loadingProcessed && processedPosts.map((post) => (
+              {!loadingProcessed && sortedProcessed.map((post) => (
                 <article key={post.id} className="case-card hover-glow grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto]">
                   <div className="space-y-3">
                     <DifficultyBadge difficulty={post.difficulty} />
@@ -876,6 +888,9 @@ const App = () => {
                     <div className="flex flex-wrap gap-2">
                       {post.reasons.map((reason) => <Chip key={`${post.id}-${reason}`} label={reason} />)}
                     </div>
+                  </div>
+                  <div className="relative flex items-start justify-end gap-2 text-sm lg:flex-col lg:text-right">
+                    <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#7C5CFC]" onClick={() => void runSingleAction(post, 'escalate')}>Escalate</button>
                   </div>
                 </article>
               ))}
