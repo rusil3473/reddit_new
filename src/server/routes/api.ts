@@ -102,27 +102,11 @@ type QueueApiPost = {
   title: string;
   author: string;
   score: number;
-  difficulty: 'easy' | 'medium' | 'hard' | 'legendary';
   reasons: string[];
   reportCount: number;
   createdAt: string;
   type: 'post' | 'comment';
   confidence: number;
-};
-
-const difficultyFromScore = (
-  score: number
-): 'easy' | 'medium' | 'hard' | 'legendary' => {
-  if (score < 0.3) {
-    return 'easy';
-  }
-  if (score <= 0.6) {
-    return 'medium';
-  }
-  if (score <= 0.85) {
-    return 'hard';
-  }
-  return 'legendary';
 };
 
 api.get('/queue', async (c) => {
@@ -192,7 +176,6 @@ api.get('/queue', async (c) => {
         title: item.title,
         author: item.authorName,
         score: item.score,
-        difficulty: difficultyFromScore(item.score),
         reasons: item.reasons,
         reportCount: item.reportCount,
         createdAt: new Date(scoreRecord?.createdAt ?? Date.now()).toISOString(),
@@ -218,7 +201,6 @@ api.get('/escalated', async (c) => {
     title: item.title,
     author: item.authorName,
     score: item.score,
-    difficulty: difficultyFromScore(item.score),
     reasons: item.reasons,
     reportCount: item.reportCount,
     createdAt: new Date().toISOString(),

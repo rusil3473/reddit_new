@@ -2,7 +2,7 @@
 // dashboard UI. Kept separate from types and components so they can be
 // imported without pulling in React.
 
-import type { Difficulty, FeedSort, ModAction, TabKey } from './types';
+import type { FeedSort, ModAction, TabKey } from './types';
 
 export const tabs: Array<{ key: TabKey; label: string }> = [
   { key: 'priority', label: 'Priority Queue' },
@@ -23,18 +23,4 @@ export const actionLabels: Record<ModAction, string> = {
   approve: 'Approve',
   remove: 'Remove',
   escalate: 'Escalate',
-};
-
-export const difficultyClass: Record<Difficulty, string> = {
-  easy: 'bg-[#22C55E]/20 text-[#86EFAC] border border-[#22C55E]/30',
-  medium: 'bg-[#F59E0B]/20 text-[#FCD34D] border border-[#F59E0B]/30',
-  hard: 'bg-[#EF4444]/20 text-[#FCA5A5] border border-[#EF4444]/30',
-  legendary: 'legend-pill bg-[#7C5CFC]/20 text-[#C4B5FD] border border-[#7C5CFC]/35',
-};
-
-export const difficultyText: Record<Difficulty, string> = {
-  easy: 'EASY',
-  medium: 'MEDIUM',
-  hard: 'HARD',
-  legendary: 'LEGENDARY',
 };

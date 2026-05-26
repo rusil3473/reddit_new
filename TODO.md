@@ -63,9 +63,6 @@
 - Add basic rate limiting / abuse guard for action endpoints.
 
 ## P2 - UI Improvements
-- Add clear badge labels for reject score bands.
-- EASY: <0.30, MEDIUM: 0.30-0.59, HARD: 0.60-0.84, LEGENDARY: >=0.85.
-
 - Add non-mod denied screen action.
 - Include "Contact moderators" or modmail link.
 

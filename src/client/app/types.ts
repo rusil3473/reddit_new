@@ -10,14 +10,11 @@ export type FeedSort = 'risk_desc' | 'risk_asc' | 'newest';
 
 export type ModAction = 'approve' | 'remove' | 'escalate';
 
-export type Difficulty = 'easy' | 'medium' | 'hard' | 'legendary';
-
 export type QueuePost = {
   id: string;
   title: string;
   author: string;
   score: number;
-  difficulty: Difficulty;
   reasons: string[];
   reportCount: number;
   createdAt: string;

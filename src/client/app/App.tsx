@@ -14,9 +14,8 @@ import {
   sortOptions,
   tabs,
 } from './constants';
-import { formatNow, scoreToDifficulty } from './utils';
+import { formatNow } from './utils';
 import { Chip } from './components/Chip';
-import { DifficultyBadge } from './components/DifficultyBadge';
 import { ScoreBar } from './components/ScoreBar';
 import { SkeletonCard } from './components/SkeletonCard';
 import { SliderField } from './components/SliderField';
@@ -91,7 +90,7 @@ export const App = () => {
     setRescoring((prev) => ({ ...prev, [postId]: true }));
     try {
       const res = await apiClient.request<{ success: boolean; post: { id: string; score: number; reasons: string[]; label: string } }>('/api/rescore', { method: 'POST', body: JSON.stringify({ postId }) });
-      setQueuePosts((prev) => prev.map((p) => p.id === postId ? { ...p, score: res.post.score, reasons: res.post.reasons, difficulty: scoreToDifficulty(res.post.score) } : p));
+      setQueuePosts((prev) => prev.map((p) => p.id === postId ? { ...p, score: res.post.score, reasons: res.post.reasons } : p));
       addToast('Rescored successfully', 'success');
     } catch {
       addToast('Rescore failed', 'error');
@@ -111,7 +110,6 @@ export const App = () => {
           title: row.meta.title,
           author: row.meta.authorName,
           score,
-          difficulty: scoreToDifficulty(score),
           reasons: row.score?.reasons ?? ['Recent report'],
           reportCount: row.meta.reportCount,
           createdAt: new Date(row.meta.lastReportedAt).toISOString(),
@@ -149,7 +147,6 @@ export const App = () => {
           title: row.meta.title,
           author: row.meta.authorName,
           score,
-          difficulty: scoreToDifficulty(score),
           reasons: row.score?.reasons ?? [row.meta.processedAction ?? 'reviewed'],
           reportCount: row.meta.reportCount,
           createdAt: new Date(row.meta.lastReportedAt).toISOString(),
@@ -632,11 +629,10 @@ export const App = () => {
               {!loadingQueue && sortedQueuePosts.map((post) => {
                 const checked = selectedIds.has(post.id);
                 return (
-                  <article key={post.id} className={`case-card hover-glow relative grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto] ${post.difficulty === 'legendary' ? 'legendary-glow' : ''} ${checked ? 'border-l-[3px] border-l-[#7C5CFC] bg-[#22263a]' : ''}`}>
+                  <article key={post.id} className={`case-card hover-glow relative grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto] ${checked ? 'border-l-[3px] border-l-[#7C5CFC] bg-[#22263a]' : ''}`}>
                     <div className="space-y-3">
                       <div className="flex items-center gap-2">
                         <input type="checkbox" checked={checked} onChange={() => toggleSelect(post.id)} className="h-4 w-4 cursor-pointer accent-[#7C5CFC]" />
-                        <DifficultyBadge difficulty={post.difficulty} />
                       </div>
                       <div>
                         <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
@@ -698,7 +694,6 @@ export const App = () => {
               {!loadingEscalated && sortedEscalated.map((post) => (
                 <article key={post.id} className="case-card hover-glow grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto]">
                   <div className="space-y-3">
-                    <DifficultyBadge difficulty={post.difficulty} />
                     <div>
                       <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
                       <p className="mt-1 text-sm text-[#64748B]"><button type="button" className="hover:text-[#7C5CFC] hover:underline" onClick={() => void openUserStats(post.author)}>u/{post.author}</button></p>
@@ -737,7 +732,6 @@ export const App = () => {
               {!loadingReported && sortedReported.map((post) => (
                 <article key={post.id} className="case-card hover-glow grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto]">
                   <div className="space-y-3">
-                    <DifficultyBadge difficulty={post.difficulty} />
                     <div>
                       <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
                       <p className="mt-1 text-sm text-[#64748B]"><button type="button" className="hover:text-[#7C5CFC] hover:underline" onClick={() => void openUserStats(post.author)}>u/{post.author}</button></p>
@@ -776,7 +770,6 @@ export const App = () => {
               {!loadingProcessed && sortedProcessed.map((post) => (
                 <article key={post.id} className="case-card hover-glow grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto]">
                   <div className="space-y-3">
-                    <DifficultyBadge difficulty={post.difficulty} />
                     <div>
                       <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
                       <p className="mt-1 text-sm text-[#64748B]"><button type="button" className="hover:text-[#7C5CFC] hover:underline" onClick={() => void openUserStats(post.author)}>u/{post.author}</button></p>
