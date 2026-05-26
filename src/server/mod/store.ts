@@ -164,6 +164,7 @@ export const writeScoreRecord = async (
     signalCountAtScoring: String(record.signalCountAtScoring ?? 0),
     confidence: String(record.confidence ?? 0.4),
     scoreSource: record.scoreSource ?? 'gemini',
+    banEvasionMatch: record.banEvasionMatch ? JSON.stringify(record.banEvasionMatch) : '',
   });
 
   if (options?.enqueue !== false) {
@@ -226,7 +227,27 @@ export const readScoreRecord = async (
     signalCountAtScoring: parseNumber(raw.signalCountAtScoring, 0),
     confidence: parseNumber(raw.confidence, 0.4),
     scoreSource: (raw.scoreSource as ScoreRecord['scoreSource']) ?? 'gemini',
+    banEvasionMatch: raw.banEvasionMatch ? safeParseBanEvasion(raw.banEvasionMatch) : undefined,
   };
+};
+
+const safeParseBanEvasion = (raw: string): ScoreRecord['banEvasionMatch'] => {
+  try {
+    const parsed = JSON.parse(raw) as ScoreRecord['banEvasionMatch'];
+    if (
+      parsed &&
+      typeof parsed.matchedAuthor === 'string' &&
+      typeof parsed.matchedPostId === 'string' &&
+      typeof parsed.similarity === 'number' &&
+      typeof parsed.threshold === 'number' &&
+      typeof parsed.timestamp === 'number'
+    ) {
+      return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
 };
 
 const readReportedPostIds = async (subredditId: string): Promise<string[]> => {

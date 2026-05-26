@@ -1,10 +1,12 @@
 import { reddit, redis } from '@devvit/web/server';
-import type { ActionRequest, ScoreContentRequest, ScoreRecord, ScoreSource } from '../../shared/mod';
-import { scoreWithLearning, type LearningSignal } from './llm';
+import type { ActionRequest, BanEvasionMatch, ScoreContentRequest, ScoreRecord, ScoreSource } from '../../shared/mod';
+import { extractFingerprint, jaccardSimilarity, scoreWithLearning, type LearningSignal } from './llm';
 import {
+  addBannedSignal,
   isSiqPostId,
   incrementActionStats,
   markReportedPostProcessed,
+  readBannedSignals,
   readRules,
   readScoreRecord,
   removeFromQueue,
@@ -53,6 +55,44 @@ const removePost = async (tid: `t3_${string}`): Promise<void> => {
   }
 };
 
+// detectBanEvasion compares a candidate post's fingerprint against the
+// per-subreddit banned-signals corpus and returns the best match if its
+// Jaccard similarity meets or exceeds the rules threshold.
+//
+// Self-match guard: signals authored by the same user as the candidate
+// are excluded — repeat behavior by the same author is already handled
+// by the learning loop, and we do not want a user matching themselves.
+const detectBanEvasion = async (
+  subredditId: string,
+  payload: ScoreContentRequest,
+  threshold: number
+): Promise<BanEvasionMatch | undefined> => {
+  const fingerprint = extractFingerprint(payload.title, payload.body);
+  if (fingerprint.length === 0) return undefined;
+
+  const signals = await readBannedSignals(subredditId);
+  if (signals.length === 0) return undefined;
+
+  let best: { sim: number; signal: typeof signals[number] } | undefined;
+  for (const signal of signals) {
+    if (signal.authorName === payload.authorName) continue;
+    const sim = jaccardSimilarity(fingerprint, signal.fingerprint);
+    if (!best || sim > best.sim) {
+      best = { sim, signal };
+    }
+  }
+
+  if (!best || best.sim < threshold) return undefined;
+
+  return {
+    matchedAuthor: best.signal.authorName,
+    matchedPostId: best.signal.postId,
+    similarity: best.sim,
+    threshold,
+    timestamp: Date.now(),
+  };
+};
+
 export const scoreContent = async (
   subredditId: string,
   payload: ScoreContentRequest,
@@ -77,11 +117,23 @@ export const scoreContent = async (
   const modelResult = await scoreWithLearning(payload, rules, pastSignals);
   const scamOverride = detectCriticalScam(payload.title, payload.body);
 
+  // Ban-evasion match is informational only: it appends a reason and
+  // attaches metadata for the queue UI. It does NOT force suggested_action
+  // and does NOT alter the score. Skip the work entirely for SIQ posts.
+  const banEvasion = siqPost
+    ? undefined
+    : await detectBanEvasion(subredditId, payload, rules.banEvasionThreshold);
+
   const forcedScore = scamOverride.hit ? Math.max(modelResult.score, 0.92) : modelResult.score;
   const forcedLabel = forcedScore >= 0.6 ? 'high_risk' : modelResult.label;
-  const mergedReasons = scamOverride.hit
-    ? ['Safety override: critical scam pattern detected', ...scamOverride.reasons, ...modelResult.reasons].slice(0, 4)
-    : modelResult.reasons;
+  const baseReasons = scamOverride.hit
+    ? ['Safety override: critical scam pattern detected', ...scamOverride.reasons, ...modelResult.reasons]
+    : [...modelResult.reasons];
+  if (banEvasion) {
+    const pct = Math.round(banEvasion.similarity * 100);
+    baseReasons.push(`Possible ban evasion: ${pct}% match with u/${banEvasion.matchedAuthor}`);
+  }
+  const mergedReasons = baseReasons.slice(0, 4);
   const forcedSuggestedAction = scamOverride.hit ? 'remove' : modelResult.suggested_action;
 
   const finalSuggestedAction = siqPost ? 'approve' : forcedSuggestedAction;
@@ -108,6 +160,7 @@ export const scoreContent = async (
     signalCountAtScoring: pastSignals.length,
     confidence: modelResult.confidence,
     scoreSource,
+    banEvasionMatch: siqPost ? undefined : banEvasion,
   };
 
   await writeScoreRecord(record, { enqueue: !siqPost });
@@ -130,6 +183,19 @@ export const applyAction = async (
       await reddit.approve(tid);
     } else {
       await removePost(tid);
+    }
+
+    // On remove, add this post to the per-subreddit banned-signals corpus
+    // so future scoring can detect ban-evasion attempts. Treats removal-by-mod
+    // as the proxy for "banned-author content" — see store.ts comment.
+    if (action === 'remove' && score) {
+      await addBannedSignal(input.subredditId, {
+        authorName: score.authorName,
+        postId: score.postId,
+        title: score.title,
+        fingerprint: extractFingerprint(score.title, score.body),
+        timestamp: Date.now(),
+      });
     }
 
     await Promise.all([
