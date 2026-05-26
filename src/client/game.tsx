@@ -4,15 +4,12 @@ import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { apiClient } from './lib/apiClient';
 import type {
-  AccessResponse,
   AuditItem,
   FeedSort,
   ModAction,
   QueuePost,
   QueueResponse,
   StatsResponse,
-  Toast,
-  ToastTone,
   TabKey,
 } from './app/types';
 import {
@@ -27,6 +24,9 @@ import { ScoreBar } from './app/components/ScoreBar';
 import { SkeletonCard } from './app/components/SkeletonCard';
 import { SliderField } from './app/components/SliderField';
 import { StatCard } from './app/components/StatCard';
+import { useToasts } from './app/hooks/useToasts';
+import { useAccessGate } from './app/hooks/useAccessGate';
+import { useUserStats } from './app/hooks/useUserStats';
 
 const App = () => {
   const [activeTab, setActiveTab] = useState<TabKey>('priority');
@@ -54,45 +54,19 @@ const App = () => {
   const [processingIds, setProcessingIds] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState<ModAction | null>(null);
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const [accessState, setAccessState] = useState<'checking' | 'allowed' | 'denied'>('checking');
-  const [viewingUser, setViewingUser] = useState<string | null>(null);
-  const [userStats, setUserStats] = useState<{ counts: { approved: number; removed: number; reportsReceived: number }; posts: { approved: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }>; removed: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }> }; reportedPosts: Array<{ postId: string; title: string; reportCount: number; lastReportedAt: number; status: string; score: number; reasons: string[] }> } | null>(null);
-  const [loadingUserStats, setLoadingUserStats] = useState(false);
-  const [userTab, setUserTab] = useState<'approved' | 'removed' | 'reportsReceived'>('approved');
+  const { toasts, addToast } = useToasts();
+  const { accessState, checkAccess } = useAccessGate();
+  const {
+    viewingUser,
+    userStats,
+    loadingUserStats,
+    userTab,
+    setUserTab,
+    openUserStats,
+    reloadUserStats,
+    closeUserStats,
+  } = useUserStats({ onError: (msg) => addToast(msg, 'error') });
   const [reportsReceivedSort, setReportsReceivedSort] = useState<'count' | 'score' | 'recent'>('recent');
-
-  const addToast = (text: string, tone: ToastTone): void => {
-    const id = Date.now() + Math.floor(Math.random() * 1000);
-    setToasts((prev) => [...prev, { id, text, tone }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((toast) => toast.id !== id));
-    }, 3000);
-  };
-
-  const fetchUserStats = async (username: string): Promise<void> => {
-    setLoadingUserStats(true);
-    try {
-      const res = await apiClient.request<{ success: boolean; counts: { approved: number; removed: number; reportsReceived: number }; posts: { approved: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }>; removed: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }> }; reportedPosts: Array<{ postId: string; title: string; reportCount: number; lastReportedAt: number; status: string; score: number; reasons: string[] }> }>(`/api/user-stats?username=${encodeURIComponent(username)}`);
-      setUserStats({ counts: res.counts, posts: res.posts, reportedPosts: res.reportedPosts });
-    } catch {
-      addToast('Failed to load user stats', 'error');
-      setViewingUser(null);
-    } finally {
-      setLoadingUserStats(false);
-    }
-  };
-
-  const openUserStats = async (username: string): Promise<void> => {
-    setViewingUser(username);
-    setUserTab('approved');
-    await fetchUserStats(username);
-  };
-
-  const reloadUserStats = async (): Promise<void> => {
-    if (!viewingUser) return;
-    await fetchUserStats(viewingUser);
-  };
 
   const sendQueueMessage = async (): Promise<QueueResponse> => {
     return apiClient.request<QueueResponse>('/api/queue');
@@ -100,21 +74,6 @@ const App = () => {
 
   const sendStatsMessage = async (): Promise<StatsResponse> => {
     return apiClient.request<StatsResponse>('/api/stats');
-  };
-
-  const checkAccess = async (): Promise<boolean> => {
-    try {
-      const response = await apiClient.request<AccessResponse>('/api/access');
-      if (!response.isModerator) {
-        setAccessState('denied');
-        return false;
-      }
-      setAccessState('allowed');
-      return true;
-    } catch {
-      setAccessState('denied');
-      return false;
-    }
   };
 
   const refreshQueue = async (): Promise<void> => {
@@ -483,7 +442,7 @@ const App = () => {
         {viewingUser ? (
           <div className="p-4 md:p-5 space-y-4">
             <div className="flex items-center gap-3">
-              <button type="button" onClick={() => { setViewingUser(null); setUserStats(null); }} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] hover:text-white">← Back</button>
+              <button type="button" onClick={() => closeUserStats()} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] hover:text-white">← Back</button>
               <h2 className="text-2xl font-bold">u/{viewingUser}</h2>
             </div>
             {loadingUserStats && <div className="space-y-3"><SkeletonCard /><SkeletonCard /></div>}
