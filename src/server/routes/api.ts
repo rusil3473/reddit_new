@@ -16,13 +16,19 @@ import type {
 import { applyAction, scoreContent } from '../mod/pipeline';
 import { extractFingerprint, extractTrigrams, buildSnippet, type LearningSignal } from '../mod/llm';
 import {
+  addBannedUser,
   backfillBannedSignalsFromAudit,
+  isUserBanned,
   readAuditEntriesPaged,
+  readBannedUsers,
   readQueueItems,
   readReportedPosts,
   readScoreRecord,
   readSummaryStats,
   readRules,
+  removeBannedUser,
+  removeBannedUserSignals,
+  seedBannedUserCorpus,
   writeRules,
   writeAuditEntry,
   addEscalatedPost,
@@ -91,6 +97,19 @@ const rulesSchema = z.object({
   autoRemoveThreshold: z.number().min(0).max(1),
   banEvasionThreshold: z.number().min(0).max(1),
   communityRules: z.array(z.string().min(1)).max(200),
+});
+
+// Ban request: durationDays omitted/null/0 means permanent (per Reddit API).
+// Reason is bounded so we don't accidentally ship multi-paragraph text into
+// the modlog. Username is the bare handle without 'u/' prefix.
+const banUserSchema = z.object({
+  username: z.string().trim().min(1).max(50),
+  durationDays: z.number().int().min(0).max(999).optional(),
+  reason: z.string().trim().max(300).optional(),
+});
+
+const unbanUserSchema = z.object({
+  username: z.string().trim().min(1).max(50),
 });
 
 const keyProcessed = 'stats:processed';
@@ -544,6 +563,106 @@ api.post('/admin/backfill-banned-signals', async (c) => {
   }
 });
 
+// Ban a user on Reddit and seed the per-user signal corpus from their
+// removed-post history. Atomic-ish: if the Reddit ban call fails we do
+// NOT mutate any local state, so the dashboard stays consistent with the
+// real ban status. If the local seeding fails after a successful Reddit
+// ban, we still record the registry entry — better to have a stale corpus
+// than to lose the audit trail.
+api.post('/ban-user', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  const subredditName = getTargetSubredditName(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+
+  const bodyRaw = await c.req.json().catch(() => ({}));
+  const parsed = banUserSchema.safeParse(bodyRaw);
+  if (!parsed.success) {
+    return c.json<ErrorResponse>({ success: false, error: 'invalid_ban_payload' }, 400);
+  }
+  const { username, durationDays, reason } = parsed.data;
+
+  const modId = (await reddit.getCurrentUsername()) || 'unknown_mod';
+  const today = new Date().toISOString().slice(0, 10);
+  const finalReason =
+    reason && reason.length > 0
+      ? reason
+      : `Banned via Modecule on ${today} by u/${modId}`;
+
+  // 1. Reddit ban (the source of truth). duration omitted = permanent.
+  try {
+    await reddit.banUser({
+      username,
+      subredditName,
+      reason: finalReason,
+      ...(typeof durationDays === 'number' && durationDays > 0 ? { duration: durationDays } : {}),
+    });
+  } catch (error) {
+    console.error('reddit.banUser failed', error);
+    return c.json<ErrorResponse>(
+      { success: false, error: 'reddit_ban_failed' },
+      500
+    );
+  }
+
+  // 2. Local registry + corpus seed. Clear any stale signals for this user
+  // before seeding so re-bans are clean.
+  await removeBannedUserSignals(subredditId, username);
+  await addBannedUser(subredditId, {
+    authorName: username,
+    bannedAt: Date.now(),
+    bannedBy: modId,
+    durationDays: typeof durationDays === 'number' && durationDays > 0 ? durationDays : undefined,
+    reason: finalReason,
+  });
+  const seed = await seedBannedUserCorpus(subredditId, username);
+
+  return c.json({ success: true, seeded: seed.added });
+});
+
+// Unban a user on Reddit and clear their signals from the per-user corpus.
+// Symmetric atomicity rules to /ban-user: Reddit call first, local mutation
+// only if the Reddit call succeeded.
+api.post('/unban-user', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  const subredditName = getTargetSubredditName(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+
+  const bodyRaw = await c.req.json().catch(() => ({}));
+  const parsed = unbanUserSchema.safeParse(bodyRaw);
+  if (!parsed.success) {
+    return c.json<ErrorResponse>({ success: false, error: 'invalid_unban_payload' }, 400);
+  }
+  const { username } = parsed.data;
+
+  try {
+    await reddit.unbanUser(username, subredditName);
+  } catch (error) {
+    console.error('reddit.unbanUser failed', error);
+    return c.json<ErrorResponse>(
+      { success: false, error: 'reddit_unban_failed' },
+      500
+    );
+  }
+
+  await removeBannedUser(subredditId, username);
+  const cleared = await removeBannedUserSignals(subredditId, username);
+
+  return c.json({ success: true, cleared: cleared.removed });
+});
+
+api.get('/banned-users', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+  const list = await readBannedUsers(subredditId);
+  return c.json({ success: true, bannedUsers: list });
+});
+
 api.get('/debug/last-report-event', async (c) => {
   const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
@@ -594,9 +713,12 @@ api.get('/user-stats', async (c) => {
   // level, so this metric cannot be reliably attributed and was removed
   // to avoid misleading data.
 
+  const banned = await isUserBanned(subredditId, username);
+
   return c.json({
     success: true,
     username,
+    isBanned: banned,
     counts: { approved: approved.length, removed: removed.length, reportsReceived: userReported.length },
     posts: { approved, removed },
     reportedPosts: await Promise.all(userReported.map(async (r) => {
