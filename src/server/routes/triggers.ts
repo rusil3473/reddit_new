@@ -5,6 +5,7 @@ import { createPost } from '../core/post';
 import { scoreContent } from '../mod/pipeline';
 import { addSiqPostId, incrementReportAndMeta, isSiqPostId } from '../mod/store';
 import type { ScoreContentRequest } from '../../shared/mod';
+import { redis } from '@devvit/web/server';
 
 export const triggers = new Hono();
 
@@ -20,11 +21,18 @@ const toScorePayload = (
     return null;
   }
 
+  // Try multiple paths for author name
+  const authorName =
+    (typeof author?.name === 'string' ? author.name : null) ??
+    (typeof (post as Record<string, unknown>).authorName === 'string' ? (post as Record<string, unknown>).authorName as string : null) ??
+    (typeof (post as Record<string, unknown>).author === 'string' ? (post as Record<string, unknown>).author as string : null) ??
+    'unknown';
+
   return {
     postId: post.id,
     title: typeof post.title === 'string' ? post.title : '(untitled)',
-    body: typeof post.selftext === 'string' ? post.selftext : '',
-    authorName: typeof author?.name === 'string' ? author.name : 'unknown',
+    body: typeof post.selftext === 'string' ? (post.selftext as string) : '',
+    authorName,
     accountAgeDays: 365,
     karma: typeof author?.karma === 'number' ? author.karma : 0,
     reportCount:
@@ -96,6 +104,22 @@ triggers.post('/on-post-report', async (c) => {
       title: payload.title,
       authorName: payload.authorName,
     });
+
+    // Track who filed this report - try multiple paths for reporter identity
+    const reporter = typeof body.reporter === 'object' && body.reporter !== null ? (body.reporter as Record<string, unknown>) : null;
+    const reportedBy = typeof body.reportedBy === 'object' && body.reportedBy !== null ? (body.reportedBy as Record<string, unknown>) : null;
+    const user = typeof body.user === 'object' && body.user !== null ? (body.user as Record<string, unknown>) : null;
+    const reporterName =
+      (typeof reporter?.name === 'string' ? reporter.name : null) ??
+      (typeof reportedBy?.name === 'string' ? reportedBy.name : null) ??
+      (typeof user?.name === 'string' ? user.name : null) ??
+      null;
+    if (reporterName) {
+      const key = `reports_filed:${context.subredditId}:${reporterName}`;
+      const existing: Array<{ postId: string; title: string; reportedAt: number }> = JSON.parse(await redis.get(key) ?? '[]');
+      existing.unshift({ postId: payload.postId, title: payload.title, reportedAt: Date.now() });
+      await redis.set(key, JSON.stringify(existing.slice(0, 100)));
+    }
 
     if (meta.reportCount >= 3) {
       await scoreContent(context.subredditId, {

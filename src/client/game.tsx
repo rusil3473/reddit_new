@@ -32,6 +32,7 @@ type StatsResponse = {
 };
 
 type AuditItem = {
+  postId: string;
   ts: string;
   mod: string;
   title: string;
@@ -94,6 +95,7 @@ const App = () => {
   const [removeThreshold, setRemoveThreshold] = useState(0.85);
   const [rulesText, setRulesText] = useState('Be civil\nNo direct threats\nNo promotional spam\nRespect reporting process');
   const [loadingQueue, setLoadingQueue] = useState(true);
+  const [rescoring, setRescoring] = useState<Record<string, boolean>>({});
   const [loadingReported, setLoadingReported] = useState(true);
   const [loadingProcessed, setLoadingProcessed] = useState(true);
   const [processingIds, setProcessingIds] = useState<Record<string, boolean>>({});
@@ -101,6 +103,11 @@ const App = () => {
   const [bulkLoading, setBulkLoading] = useState<ModAction | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [accessState, setAccessState] = useState<'checking' | 'allowed' | 'denied'>('checking');
+  const [viewingUser, setViewingUser] = useState<string | null>(null);
+  const [userStats, setUserStats] = useState<{ counts: { approved: number; removed: number; reportsReceived: number; reportsFiled: number }; posts: { approved: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }>; removed: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }> }; reportedPosts: Array<{ postId: string; title: string; reportCount: number; lastReportedAt: number; status: string; score: number; reasons: string[] }>; reportsFiled: Array<{ postId: string; title: string; reportedAt: number }> } | null>(null);
+  const [loadingUserStats, setLoadingUserStats] = useState(false);
+  const [userTab, setUserTab] = useState<'approved' | 'removed' | 'reportsReceived' | 'reportsFiled'>('approved');
+  const [reportsReceivedSort, setReportsReceivedSort] = useState<'count' | 'score' | 'recent'>('recent');
 
   const addToast = (text: string, tone: ToastTone): void => {
     const id = Date.now() + Math.floor(Math.random() * 1000);
@@ -108,6 +115,21 @@ const App = () => {
     setTimeout(() => {
       setToasts((prev) => prev.filter((toast) => toast.id !== id));
     }, 3000);
+  };
+
+  const openUserStats = async (username: string): Promise<void> => {
+    setViewingUser(username);
+    setUserTab('approved');
+    setLoadingUserStats(true);
+    try {
+      const res = await apiClient.request<{ success: boolean; counts: { approved: number; removed: number; reportsReceived: number; reportsFiled: number }; posts: { approved: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }>; removed: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }> }; reportedPosts: Array<{ postId: string; title: string; reportCount: number; lastReportedAt: number; status: string; score: number; reasons: string[] }>; reportsFiled: Array<{ postId: string; title: string; reportedAt: number }> }>(`/api/user-stats?username=${encodeURIComponent(username)}`);
+      setUserStats({ counts: res.counts, posts: res.posts, reportedPosts: res.reportedPosts, reportsFiled: res.reportsFiled ?? [] });
+    } catch {
+      addToast('Failed to load user stats', 'error');
+      setViewingUser(null);
+    } finally {
+      setLoadingUserStats(false);
+    }
   };
 
   const sendQueueMessage = async (): Promise<QueueResponse> => {
@@ -144,6 +166,19 @@ const App = () => {
       addToast('Queue fetch failed', 'error');
     } finally {
       setLoadingQueue(false);
+    }
+  };
+
+  const rescorePost = async (postId: string): Promise<void> => {
+    setRescoring((prev) => ({ ...prev, [postId]: true }));
+    try {
+      const res = await apiClient.request<{ success: boolean; post: { id: string; score: number; reasons: string[]; label: string } }>('/api/rescore', { method: 'POST', body: JSON.stringify({ postId }) });
+      setQueuePosts((prev) => prev.map((p) => p.id === postId ? { ...p, score: res.post.score, reasons: res.post.reasons, difficulty: scoreToDifficulty(res.post.score) } : p));
+      addToast('Rescored successfully', 'success');
+    } catch {
+      addToast('Rescore failed', 'error');
+    } finally {
+      setRescoring((prev) => ({ ...prev, [postId]: false }));
     }
   };
 
@@ -220,6 +255,7 @@ const App = () => {
       const sorted = [...res.entries].sort((a, b) => b.timestamp - a.timestamp);
       const filtered = sorted.filter((e) => !e.postTitle.includes('Smart Intelligent Queue Dashboard'));
       const mapped = filtered.map((entry) => ({
+        postId: entry.postId,
         ts: new Date(entry.timestamp).toLocaleString('en-US', { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
         mod: entry.modId.startsWith('u/') ? entry.modId : `u/${entry.modId}`,
         title: entry.postTitle,
@@ -341,6 +377,7 @@ const App = () => {
     const mappedAction = action === 'approve' ? 'approved' : action === 'remove' ? 'removed' : 'escalated';
     setAuditLog((prev) => [
       {
+        postId: post.id,
         ts: formatNow(),
         mod: 'u/rusil4421',
         title: post.title,
@@ -476,6 +513,136 @@ const App = () => {
         )}
         {accessState === 'allowed' && (
           <>
+        {viewingUser ? (
+          <div className="p-4 md:p-5 space-y-4">
+            <div className="flex items-center gap-3">
+              <button type="button" onClick={() => { setViewingUser(null); setUserStats(null); }} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] hover:text-white">← Back</button>
+              <h2 className="text-2xl font-bold">u/{viewingUser}</h2>
+              <button type="button" onClick={() => void openUserStats(viewingUser)} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button>
+            </div>
+            {loadingUserStats && <div className="space-y-3"><SkeletonCard /><SkeletonCard /></div>}
+            {!loadingUserStats && userStats && (
+              <>
+                <section className="grid gap-2 sm:grid-cols-4">
+                  <StatCard value={String(userStats.counts.approved)} label="Approved" accent="text-[#22C55E]" />
+                  <StatCard value={String(userStats.counts.removed)} label="Removed" accent="text-[#EF4444]" />
+                  <StatCard value={String(userStats.counts.reportsReceived)} label="Reports Received" accent="text-[#F59E0B]" />
+                  <StatCard value={String(userStats.counts.reportsFiled)} label="Reports Filed" accent="text-[#7C5CFC]" />
+                </section>
+
+                <nav className="border-b border-[#22263A]">
+                  <div className="flex gap-3">
+                    <button className={`tab-btn ${userTab === 'approved' ? 'active' : ''}`} onClick={() => setUserTab('approved')}>Approved ({userStats.posts.approved.length})</button>
+                    <button className={`tab-btn ${userTab === 'removed' ? 'active' : ''}`} onClick={() => setUserTab('removed')}>Removed ({userStats.posts.removed.length})</button>
+                    <button className={`tab-btn ${userTab === 'reportsReceived' ? 'active' : ''}`} onClick={() => setUserTab('reportsReceived')}>Reports Received ({userStats.reportedPosts.length})</button>
+                    <button className={`tab-btn ${userTab === 'reportsFiled' ? 'active' : ''}`} onClick={() => setUserTab('reportsFiled')}>Reports Filed ({userStats.reportsFiled.length})</button>
+                  </div>
+                </nav>
+
+                {userTab === 'approved' && (
+                  <div className="space-y-2">
+                    {userStats.posts.approved.map((p) => (
+                      <article key={p.postId} className="case-card p-3 grid gap-3 lg:grid-cols-[1fr_auto]">
+                        <div className="space-y-2">
+                          <h4 className="font-semibold">{p.title}</h4>
+                          <ScoreBar score={p.score} />
+                          <div className="flex flex-wrap gap-2">
+                            {p.reasons.map((r) => <Chip key={`${p.postId}-${r}`} label={r} />)}
+                          </div>
+                          <p className="text-xs text-[#64748B]">{new Date(p.timestamp).toLocaleString()}</p>
+                        </div>
+                        <div className="flex items-start justify-end">
+                          <button type="button" disabled={Boolean(processingIds[p.postId])} className="action-link text-[#7C5CFC]" onClick={async () => {
+                            setProcessingIds((prev) => ({ ...prev, [p.postId]: true }));
+                            try { await apiClient.request<{ success: boolean }>('/api/mod-action', { method: 'POST', body: JSON.stringify({ type: 'MOD_ACTION', action: 'escalate', postId: p.postId }) }); addToast('Escalated', 'success'); void refreshEscalated(); } catch { addToast('Escalate failed', 'error'); }
+                            finally { setProcessingIds((prev) => ({ ...prev, [p.postId]: false })); }
+                          }}>Escalate</button>
+                        </div>
+                      </article>
+                    ))}
+                    {userStats.posts.approved.length === 0 && <p className="text-sm text-[#64748B]">No approved posts.</p>}
+                  </div>
+                )}
+
+                {userTab === 'removed' && (
+                  <div className="space-y-2">
+                    {userStats.posts.removed.map((p) => (
+                      <article key={p.postId} className="case-card p-3 grid gap-3 lg:grid-cols-[1fr_auto]">
+                        <div className="space-y-2">
+                          <h4 className="font-semibold">{p.title}</h4>
+                          <ScoreBar score={p.score} />
+                          <div className="flex flex-wrap gap-2">
+                            {p.reasons.map((r) => <Chip key={`${p.postId}-${r}`} label={r} />)}
+                          </div>
+                          <p className="text-xs text-[#64748B]">{new Date(p.timestamp).toLocaleString()}</p>
+                        </div>
+                        <div className="flex items-start justify-end">
+                          <button type="button" disabled={Boolean(processingIds[p.postId])} className="action-link text-[#7C5CFC]" onClick={async () => {
+                            setProcessingIds((prev) => ({ ...prev, [p.postId]: true }));
+                            try { await apiClient.request<{ success: boolean }>('/api/mod-action', { method: 'POST', body: JSON.stringify({ type: 'MOD_ACTION', action: 'escalate', postId: p.postId }) }); addToast('Escalated', 'success'); void refreshEscalated(); } catch { addToast('Escalate failed', 'error'); }
+                            finally { setProcessingIds((prev) => ({ ...prev, [p.postId]: false })); }
+                          }}>Escalate</button>
+                        </div>
+                      </article>
+                    ))}
+                    {userStats.posts.removed.length === 0 && <p className="text-sm text-[#64748B]">No removed posts.</p>}
+                  </div>
+                )}
+
+                {userTab === 'reportsReceived' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <select value={reportsReceivedSort} onChange={(e) => setReportsReceivedSort(e.target.value as 'count' | 'score' | 'recent')} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-2 text-sm text-[#94A3B8] outline-none">
+                        <option value="recent">Sort by: Recent</option>
+                        <option value="count">Sort by: Report count</option>
+                        <option value="score">Sort by: Risk score</option>
+                      </select>
+                    </div>
+                    {[...userStats.reportedPosts].sort((a, b) => reportsReceivedSort === 'count' ? b.reportCount - a.reportCount : reportsReceivedSort === 'score' ? b.score - a.score : b.lastReportedAt - a.lastReportedAt).map((p) => (
+                      <article key={p.postId} className="case-card p-3 grid gap-3 lg:grid-cols-[1fr_auto]">
+                        <div className="space-y-2">
+                          <h4 className="font-semibold">{p.title}</h4>
+                          <ScoreBar score={p.score} />
+                          <div className="flex flex-wrap gap-2">
+                            {p.reasons.map((r) => <Chip key={`${p.postId}-${r}`} label={r} />)}
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-[#64748B]">
+                            <span>Reports: {p.reportCount}</span>
+                            <span>Status: {p.status}</span>
+                            <span>{new Date(p.lastReportedAt).toLocaleString()}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-start justify-end">
+                          <button type="button" disabled={Boolean(processingIds[p.postId])} className="action-link text-[#7C5CFC]" onClick={async () => {
+                            setProcessingIds((prev) => ({ ...prev, [p.postId]: true }));
+                            try { await apiClient.request<{ success: boolean }>('/api/mod-action', { method: 'POST', body: JSON.stringify({ type: 'MOD_ACTION', action: 'escalate', postId: p.postId }) }); addToast('Escalated', 'success'); void refreshEscalated(); } catch { addToast('Escalate failed', 'error'); }
+                            finally { setProcessingIds((prev) => ({ ...prev, [p.postId]: false })); }
+                          }}>Escalate</button>
+                        </div>
+                      </article>
+                    ))}
+                    {userStats.reportedPosts.length === 0 && <p className="text-sm text-[#64748B]">No reports received.</p>}
+                  </div>
+                )}
+
+                {userTab === 'reportsFiled' && (
+                  <div className="space-y-2">
+                    {userStats.reportsFiled.map((p) => (
+                      <article key={p.postId} className="case-card p-3 space-y-2">
+                        <h4 className="font-semibold">{p.title}</h4>
+                        <div className="flex items-center gap-3 text-xs text-[#64748B]">
+                          <span>Reported on: {new Date(p.reportedAt).toLocaleString()}</span>
+                        </div>
+                      </article>
+                    ))}
+                    {userStats.reportsFiled.length === 0 && <p className="text-sm text-[#64748B]">No reports filed by this user.</p>}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        ) : (
+          <>
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#22263A] px-4 py-3 md:px-5">
           <h1 className="text-2xl font-extrabold tracking-[0.08em] text-[#7C5CFC]">MODECULE</h1>
           <span className="text-sm text-[#64748B]">r/modecule_dev</span>
@@ -483,8 +650,8 @@ const App = () => {
 
         <section className="grid gap-2 border-b border-[#22263A] px-4 py-3 sm:grid-cols-2 lg:grid-cols-7 md:px-5">
           <StatCard value={String(stats.processed)} label="Processed" accent="text-[#F1F5F9]" />
-          <StatCard value={String(stats.removed)} label="Removed today" accent="text-[#EF4444]" />
-          <StatCard value={String(stats.approved)} label="Approved today" accent="text-[#22C55E]" />
+          <StatCard value={String(stats.removed)} label="Removed" accent="text-[#EF4444]" />
+          <StatCard value={String(stats.approved)} label="Approved" accent="text-[#22C55E]" />
           <StatCard value={String(queuePosts.length)} label="In queue" accent="text-[#EF4444]" pulse={queuePosts.length > 10} />
           <StatCard value={String(escalatedPosts.length)} label="Escalated" accent="text-[#7C5CFC]" />
           <StatCard value={String(processedPosts.length)} label="Processed Reports" accent="text-[#64748B]" />
@@ -564,7 +731,7 @@ const App = () => {
                       </div>
                       <div>
                         <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
-                        <p className="mt-1 text-sm text-[#64748B]">u/{post.author}</p>
+                        <p className="mt-1 text-sm text-[#64748B]"><button type="button" className="hover:text-[#7C5CFC] hover:underline" onClick={() => void openUserStats(post.author)}>u/{post.author}</button></p>
                       </div>
                       <ScoreBar score={post.score} />
                       <div className="flex flex-wrap gap-2">
@@ -575,6 +742,7 @@ const App = () => {
                     </div>
 
                     <div className="relative flex items-start justify-end gap-2 text-sm lg:flex-col lg:text-right">
+                      <button disabled={Boolean(rescoring[post.id])} className="action-link text-[#F59E0B]" onClick={() => void rescorePost(post.id)}>{rescoring[post.id] ? '⟳…' : ' Rescore'}</button>
                       <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#22C55E]" onClick={() => void runSingleAction(post, 'approve')}>Approve</button>
                       <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#EF4444]" onClick={() => void runSingleAction(post, 'remove')}>Remove</button>
                       <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#7C5CFC]" onClick={() => void runSingleAction(post, 'escalate')}>Escalate</button>
@@ -605,6 +773,7 @@ const App = () => {
 
           {activeTab === 'escalated' && (
             <div className="space-y-3">
+              <div className="flex items-center gap-2"><h2 className="text-lg font-semibold">Escalated Queue</h2><button type="button" onClick={() => void refreshEscalated()} disabled={loadingEscalated} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button></div>
               {loadingEscalated && (
                 <div className="space-y-3">
                   <SkeletonCard />
@@ -623,7 +792,7 @@ const App = () => {
                     <DifficultyBadge difficulty={post.difficulty} />
                     <div>
                       <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
-                      <p className="mt-1 text-sm text-[#64748B]">u/{post.author}</p>
+                      <p className="mt-1 text-sm text-[#64748B]"><button type="button" className="hover:text-[#7C5CFC] hover:underline" onClick={() => void openUserStats(post.author)}>u/{post.author}</button></p>
                     </div>
                     <ScoreBar score={post.score} />
                     <div className="flex flex-wrap gap-2">
@@ -631,6 +800,7 @@ const App = () => {
                     </div>
                   </div>
                   <div className="relative flex items-start justify-end gap-2 text-sm lg:flex-col lg:text-right">
+                    <button disabled={Boolean(rescoring[post.id])} className="action-link text-[#F59E0B]" onClick={() => void rescorePost(post.id)}>{rescoring[post.id] ? '⟳…' : ' Rescore'}</button>
                     <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#22C55E]" onClick={() => void runEscalatedAction(post, 'approve')}>Approve</button>
                     <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#EF4444]" onClick={() => void runEscalatedAction(post, 'remove')}>Remove</button>
                   </div>
@@ -641,6 +811,7 @@ const App = () => {
 
           {activeTab === 'reported' && (
             <div className="space-y-3">
+              <div className="flex items-center gap-2"><h2 className="text-lg font-semibold">Reported Posts</h2><button type="button" onClick={() => void refreshReported()} disabled={loadingReported} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button></div>
               {loadingReported && (
                 <div className="space-y-3">
                   <SkeletonCard />
@@ -660,7 +831,7 @@ const App = () => {
                     <DifficultyBadge difficulty={post.difficulty} />
                     <div>
                       <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
-                      <p className="mt-1 text-sm text-[#64748B]">u/{post.author}</p>
+                      <p className="mt-1 text-sm text-[#64748B]"><button type="button" className="hover:text-[#7C5CFC] hover:underline" onClick={() => void openUserStats(post.author)}>u/{post.author}</button></p>
                     </div>
                     <ScoreBar score={post.score} />
                     <div className="flex flex-wrap gap-2">
@@ -679,6 +850,7 @@ const App = () => {
 
           {activeTab === 'processed' && (
             <div className="space-y-3">
+              <div className="flex items-center gap-2"><h2 className="text-lg font-semibold">Processed Reports</h2><button type="button" onClick={() => void refreshProcessed()} disabled={loadingProcessed} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button></div>
               {loadingProcessed && (
                 <div className="space-y-3">
                   <SkeletonCard />
@@ -698,7 +870,7 @@ const App = () => {
                     <DifficultyBadge difficulty={post.difficulty} />
                     <div>
                       <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
-                      <p className="mt-1 text-sm text-[#64748B]">u/{post.author}</p>
+                      <p className="mt-1 text-sm text-[#64748B]"><button type="button" className="hover:text-[#7C5CFC] hover:underline" onClick={() => void openUserStats(post.author)}>u/{post.author}</button></p>
                     </div>
                     <ScoreBar score={post.score} />
                     <div className="flex flex-wrap gap-2">
@@ -712,6 +884,7 @@ const App = () => {
 
           {activeTab === 'audit' && (
             <div className="space-y-3">
+              <div className="flex items-center gap-2"><h2 className="text-lg font-semibold">Audit Log</h2><button type="button" onClick={() => void refreshAudit()} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button></div>
               <div className="stat-card p-4">
                 <input className="w-full rounded-lg border border-[#2A2D3E] bg-[#0F1117] px-3 py-2 text-sm outline-none placeholder:text-[#64748B] focus:border-[#7C5CFC]" placeholder="Filter by mod username or post title" value={auditFilter} onChange={(event) => setAuditFilter(event.target.value)} />
               </div>
@@ -723,6 +896,18 @@ const App = () => {
                     <span className={`rounded-full px-2 py-1 text-xs font-semibold ${entry.action === 'approved' ? 'bg-[#22C55E]/20 text-[#86EFAC]' : entry.action === 'removed' ? 'bg-[#EF4444]/20 text-[#FCA5A5]' : 'bg-[#7C5CFC]/20 text-[#C4B5FD]'}`}>{entry.action}</span>
                     <span className="rounded-full border border-[#2A2D3E] bg-[#0F1117] px-2 py-1 text-xs text-[#64748B]">Score {entry.score}</span>
                     {entry.reasons.map((reason) => <Chip key={`${entry.ts}-${reason}`} label={reason} />)}
+                    {entry.action !== 'escalated' && (
+                      <button type="button" disabled={Boolean(processingIds[entry.postId])} className="ml-auto rounded-md border border-[#7C5CFC] px-2 py-1 text-xs text-[#C4B5FD] hover:brightness-110 disabled:opacity-50" onClick={async () => {
+                        setProcessingIds((prev) => ({ ...prev, [entry.postId]: true }));
+                        try {
+                          await apiClient.request<{ success: boolean }>('/api/mod-action', { method: 'POST', body: JSON.stringify({ type: 'MOD_ACTION', action: 'escalate', postId: entry.postId }) });
+                          addToast('Escalated', 'success');
+                          void refreshAudit();
+                          void refreshEscalated();
+                        } catch { addToast('Escalate failed', 'error'); }
+                        finally { setProcessingIds((prev) => ({ ...prev, [entry.postId]: false })); }
+                      }}>Escalate</button>
+                    )}
                   </div>
                 </article>
               ))}
@@ -743,6 +928,8 @@ const App = () => {
             </div>
           )}
         </section>
+          </>
+        )}
           </>
         )}
       </div>

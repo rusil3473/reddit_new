@@ -93,7 +93,7 @@ export const buildPrompt = (
   'Signal 3 Account signals (20%): age<7 +0.40, age7-30 +0.20, age>30 +0.0, karma<0 +0.40, karma=0 and age>180 days +0.15, karma1-10 +0.10, karma>10 +0.0. cap 0..1.',
   'Signal 4 Community rule match (10%): compare against communityRules and infer likely violations by meaning. cap 1.0.',
   'finalScore=(content*0.45)+(report*0.25)+(account*0.20)+(rule*0.10).',
-  'Reasons: max 4, only mention signals that fired. If a past-decision example clearly drove the score, mention it (e.g. "matches removed pattern from example N").',
+  'Reasons: max 4, only mention signals that fired. If a past-decision example clearly drove the score, describe the specific keyword or context that matched (e.g. "Similar to previously removed post about [topic/keyword]" or "Content matches approved pattern: [keyword]"). Never use generic phrases like "matches removed pattern from example N".',
   formatExamples(examples),
   `postId: ${request.postId}`,
   `title: ${request.title}`,

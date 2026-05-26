@@ -449,10 +449,13 @@ api.get('/reported-posts', async (c) => {
 
   const metas = await readReportedPosts(subredditId, status);
   const withScores = await Promise.all(
-    metas.map(async (meta) => ({
-      meta,
-      score: await readScoreRecord(subredditId, meta.postId),
-    }))
+    metas.map(async (meta) => {
+      const score = await readScoreRecord(subredditId, meta.postId);
+      if (meta.authorName === 'unknown' && score?.authorName) {
+        meta = { ...meta, authorName: score.authorName };
+      }
+      return { meta, score };
+    })
   );
 
   withScores.sort((a, b) =>
@@ -506,6 +509,89 @@ api.post('/rules', async (c) => {
     communityRules: body.communityRules,
   });
   return c.json<RulesResponse>({ success: true, rules: await readRules(subredditId) });
+});
+
+api.get('/user-stats', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+  const username = c.req.query('username');
+  if (!username) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_username' }, 400);
+  }
+
+  // Read author action history
+  const authorKey = `author:actions:${subredditId}:${username}`;
+  const raw = await redis.get(authorKey);
+  const actions: Array<{ postId: string; action: string; score: number; timestamp: number }> = raw ? JSON.parse(raw) : [];
+
+  // Enrich with titles from score records
+  const posts = await Promise.all(
+    actions.map(async (a) => {
+      const rec = await readScoreRecord(subredditId, a.postId);
+      return { postId: a.postId, title: rec?.title ?? a.postId, action: a.action, score: a.score, timestamp: a.timestamp, reasons: rec?.reasons ?? [] };
+    })
+  );
+
+  const approved = posts.filter((p) => p.action === 'approve');
+  const removed = posts.filter((p) => p.action === 'remove');
+
+  // Get reported posts by this author (check both report meta and score records)
+  const allReported = await readReportedPosts(subredditId, 'all');
+  const userReported: typeof allReported = [];
+  for (const r of allReported) {
+    if (r.authorName === username) {
+      userReported.push(r);
+    } else if (r.authorName === 'unknown') {
+      const rec = await readScoreRecord(subredditId, r.postId);
+      if (rec?.authorName === username) userReported.push(r);
+    }
+  }
+
+  // Get reports filed by this user
+  const reportsFiledRaw = await redis.get(`reports_filed:${subredditId}:${username}`);
+  const reportsFiled: Array<{ postId: string; title: string; reportedAt: number }> = reportsFiledRaw ? JSON.parse(reportsFiledRaw) : [];
+
+  return c.json({
+    success: true,
+    username,
+    counts: { approved: approved.length, removed: removed.length, reportsReceived: userReported.length, reportsFiled: reportsFiled.length },
+    posts: { approved, removed },
+    reportedPosts: await Promise.all(userReported.map(async (r) => {
+      const rec = await readScoreRecord(subredditId, r.postId);
+      return { postId: r.postId, title: r.title, reportCount: r.reportCount, lastReportedAt: r.lastReportedAt, status: r.status, score: rec?.score ?? 0.5, reasons: rec?.reasons ?? [] };
+    })),
+    reportsFiled,
+  });
+});
+
+api.post('/rescore', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+
+  const { postId } = await c.req.json<{ postId: string }>();
+  if (!postId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_post_id' }, 400);
+  }
+
+  const rec = await readScoreRecord(subredditId, postId);
+  if (!rec) {
+    return c.json<ErrorResponse>({ success: false, error: 'score_record_not_found' }, 404);
+  }
+
+  try {
+    const updated = await scoreContent(subredditId, {
+      postId: rec.postId, title: rec.title, body: rec.body,
+      authorName: rec.authorName, accountAgeDays: rec.accountAgeDays,
+      karma: rec.karma, reportCount: rec.reportCount, priorFlagsInSub: rec.priorFlagsInSub,
+    }, { forceRescore: true });
+    return c.json({ success: true, post: { id: updated.postId, score: updated.score, reasons: updated.reasons, label: updated.label } });
+  } catch {
+    return c.json<ErrorResponse>({ success: false, error: 'rescore_failed' }, 500);
+  }
 });
 
 api.post('/score-content', async (c) => {
