@@ -109,9 +109,9 @@ const App = () => {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [accessState, setAccessState] = useState<'checking' | 'allowed' | 'denied'>('checking');
   const [viewingUser, setViewingUser] = useState<string | null>(null);
-  const [userStats, setUserStats] = useState<{ counts: { approved: number; removed: number; reportsReceived: number; reportsFiled: number }; posts: { approved: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }>; removed: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }> }; reportedPosts: Array<{ postId: string; title: string; reportCount: number; lastReportedAt: number; status: string; score: number; reasons: string[] }>; reportsFiled: Array<{ postId: string; title: string; reportedAt: number }> } | null>(null);
+  const [userStats, setUserStats] = useState<{ counts: { approved: number; removed: number; reportsReceived: number }; posts: { approved: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }>; removed: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }> }; reportedPosts: Array<{ postId: string; title: string; reportCount: number; lastReportedAt: number; status: string; score: number; reasons: string[] }> } | null>(null);
   const [loadingUserStats, setLoadingUserStats] = useState(false);
-  const [userTab, setUserTab] = useState<'approved' | 'removed' | 'reportsReceived' | 'reportsFiled'>('approved');
+  const [userTab, setUserTab] = useState<'approved' | 'removed' | 'reportsReceived'>('approved');
   const [reportsReceivedSort, setReportsReceivedSort] = useState<'count' | 'score' | 'recent'>('recent');
 
   const addToast = (text: string, tone: ToastTone): void => {
@@ -122,19 +122,28 @@ const App = () => {
     }, 3000);
   };
 
-  const openUserStats = async (username: string): Promise<void> => {
-    setViewingUser(username);
-    setUserTab('approved');
+  const fetchUserStats = async (username: string): Promise<void> => {
     setLoadingUserStats(true);
     try {
-      const res = await apiClient.request<{ success: boolean; counts: { approved: number; removed: number; reportsReceived: number; reportsFiled: number }; posts: { approved: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }>; removed: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }> }; reportedPosts: Array<{ postId: string; title: string; reportCount: number; lastReportedAt: number; status: string; score: number; reasons: string[] }>; reportsFiled: Array<{ postId: string; title: string; reportedAt: number }> }>(`/api/user-stats?username=${encodeURIComponent(username)}`);
-      setUserStats({ counts: res.counts, posts: res.posts, reportedPosts: res.reportedPosts, reportsFiled: res.reportsFiled ?? [] });
+      const res = await apiClient.request<{ success: boolean; counts: { approved: number; removed: number; reportsReceived: number }; posts: { approved: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }>; removed: Array<{ postId: string; title: string; score: number; timestamp: number; reasons: string[] }> }; reportedPosts: Array<{ postId: string; title: string; reportCount: number; lastReportedAt: number; status: string; score: number; reasons: string[] }> }>(`/api/user-stats?username=${encodeURIComponent(username)}`);
+      setUserStats({ counts: res.counts, posts: res.posts, reportedPosts: res.reportedPosts });
     } catch {
       addToast('Failed to load user stats', 'error');
       setViewingUser(null);
     } finally {
       setLoadingUserStats(false);
     }
+  };
+
+  const openUserStats = async (username: string): Promise<void> => {
+    setViewingUser(username);
+    setUserTab('approved');
+    await fetchUserStats(username);
+  };
+
+  const reloadUserStats = async (): Promise<void> => {
+    if (!viewingUser) return;
+    await fetchUserStats(viewingUser);
   };
 
   const sendQueueMessage = async (): Promise<QueueResponse> => {
@@ -532,11 +541,10 @@ const App = () => {
             {loadingUserStats && <div className="space-y-3"><SkeletonCard /><SkeletonCard /></div>}
             {!loadingUserStats && userStats && (
               <>
-                <section className="grid gap-2 sm:grid-cols-4">
+                <section className="grid gap-2 sm:grid-cols-3">
                   <StatCard value={String(userStats.counts.approved)} label="Approved" accent="text-[#22C55E]" />
                   <StatCard value={String(userStats.counts.removed)} label="Removed" accent="text-[#EF4444]" />
                   <StatCard value={String(userStats.counts.reportsReceived)} label="Reports Received" accent="text-[#F59E0B]" />
-                  <StatCard value={String(userStats.counts.reportsFiled)} label="Reports Filed" accent="text-[#7C5CFC]" />
                 </section>
 
                 <nav className="border-b border-[#22263A]">
@@ -544,13 +552,12 @@ const App = () => {
                     <button className={`tab-btn ${userTab === 'approved' ? 'active' : ''}`} onClick={() => setUserTab('approved')}>Approved ({userStats.posts.approved.length})</button>
                     <button className={`tab-btn ${userTab === 'removed' ? 'active' : ''}`} onClick={() => setUserTab('removed')}>Removed ({userStats.posts.removed.length})</button>
                     <button className={`tab-btn ${userTab === 'reportsReceived' ? 'active' : ''}`} onClick={() => setUserTab('reportsReceived')}>Reports Received ({userStats.reportedPosts.length})</button>
-                    <button className={`tab-btn ${userTab === 'reportsFiled' ? 'active' : ''}`} onClick={() => setUserTab('reportsFiled')}>Reports Filed ({userStats.reportsFiled.length})</button>
                   </div>
                 </nav>
 
                 {userTab === 'approved' && (
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2"><button type="button" onClick={() => void openUserStats(viewingUser)} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button><select value={userApprovedSort} onChange={(e) => setUserApprovedSort(e.target.value as FeedSort)} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
+                    <div className="flex items-center gap-2"><button type="button" onClick={() => void reloadUserStats()} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button><select value={userApprovedSort} onChange={(e) => setUserApprovedSort(e.target.value as FeedSort)} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
                     {[...userStats.posts.approved].sort((a, b) => userApprovedSort === 'risk_desc' ? b.score - a.score : userApprovedSort === 'risk_asc' ? a.score - b.score : b.timestamp - a.timestamp).map((p) => (
                       <article key={p.postId} className="case-card p-3 grid gap-3 lg:grid-cols-[1fr_auto]">
                         <div className="space-y-2">
@@ -576,7 +583,7 @@ const App = () => {
 
                 {userTab === 'removed' && (
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2"><button type="button" onClick={() => void openUserStats(viewingUser)} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button><select value={userRemovedSort} onChange={(e) => setUserRemovedSort(e.target.value as FeedSort)} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
+                    <div className="flex items-center gap-2"><button type="button" onClick={() => void reloadUserStats()} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button><select value={userRemovedSort} onChange={(e) => setUserRemovedSort(e.target.value as FeedSort)} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
                     {[...userStats.posts.removed].sort((a, b) => userRemovedSort === 'risk_desc' ? b.score - a.score : userRemovedSort === 'risk_asc' ? a.score - b.score : b.timestamp - a.timestamp).map((p) => (
                       <article key={p.postId} className="case-card p-3 grid gap-3 lg:grid-cols-[1fr_auto]">
                         <div className="space-y-2">
@@ -603,7 +610,7 @@ const App = () => {
                 {userTab === 'reportsReceived' && (
                   <div className="space-y-2">
                     <div className="flex items-center gap-2">
-                      <button type="button" onClick={() => void openUserStats(viewingUser)} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button>
+                      <button type="button" onClick={() => void reloadUserStats()} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button>
                       <select value={reportsReceivedSort} onChange={(e) => setReportsReceivedSort(e.target.value as 'count' | 'score' | 'recent')} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-2 text-sm text-[#94A3B8] outline-none">
                         <option value="recent">Sort by: Recent</option>
                         <option value="count">Sort by: Report count</option>
@@ -634,21 +641,6 @@ const App = () => {
                       </article>
                     ))}
                     {userStats.reportedPosts.length === 0 && <p className="text-sm text-[#64748B]">No reports received.</p>}
-                  </div>
-                )}
-
-                {userTab === 'reportsFiled' && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2"><button type="button" onClick={() => void openUserStats(viewingUser)} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button></div>
-                    {userStats.reportsFiled.map((p) => (
-                      <article key={p.postId} className="case-card p-3 space-y-2">
-                        <h4 className="font-semibold">{p.title}</h4>
-                        <div className="flex items-center gap-3 text-xs text-[#64748B]">
-                          <span>Reported on: {new Date(p.reportedAt).toLocaleString()}</span>
-                        </div>
-                      </article>
-                    ))}
-                    {userStats.reportsFiled.length === 0 && <p className="text-sm text-[#64748B]">No reports filed by this user.</p>}
                   </div>
                 )}
               </>
