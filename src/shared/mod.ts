@@ -21,16 +21,54 @@ export type BanEvasionMatch = {
   timestamp: number;
 };
 
+// BannedUserMatch is attached to a ScoreRecord when a newly-scored post's
+// fingerprint matches the historical removed-content corpus of a user that
+// was explicitly banned by a moderator from the Modecule dashboard. Distinct
+// from BanEvasionMatch in that the underlying corpus is per-banned-user,
+// not aggregated removal history. Stronger signal — the matched user is
+// known to be banned by this subreddit's mods.
+export type BannedUserMatch = {
+  matchedAuthor: string;       // the banned user's username
+  matchedPostId: string;       // one of the banned user's prior removed posts
+  similarity: number;          // 0..1, raw Jaccard score
+  threshold: number;           // threshold at scoring time
+  timestamp: number;
+};
+
 // BannedSignal is one entry in the per-subreddit banned_signals:{subredditId}
-// corpus used for ban-evasion similarity matching. We treat removal-by-mod
-// as the proxy for "banned-author content" — we do not call any Reddit ban
-// API, we infer from removal history. See pipeline.ts for the producer.
+// corpus used for ban-evasion similarity matching. We append on every mod
+// removal regardless of author.
 export type BannedSignal = {
   authorName: string;
   postId: string;
   title: string;
   fingerprint: string[];
   timestamp: number;
+};
+
+// BannedUserSignal is one entry in the per-subreddit
+// banned_user_signals:{subredditId} corpus. Each entry is a removed post
+// belonging to a user who was explicitly banned via the Modecule dashboard.
+// Seeded from author:actions:* history at ban time and trimmed when the
+// user is unbanned.
+export type BannedUserSignal = {
+  bannedUserName: string;
+  postId: string;
+  title: string;
+  fingerprint: string[];
+  timestamp: number;
+};
+
+// BannedUserRecord is the per-subreddit list entry tracking which users a
+// mod has banned via the Modecule dashboard. We keep this list so we can
+// (a) seed the signals corpus on ban, (b) clear it on unban, and (c) show
+// "Ban / Unban" affordance on the user-stats panel.
+export type BannedUserRecord = {
+  authorName: string;
+  bannedAt: number;
+  bannedBy: string;          // moderator username
+  durationDays?: number;     // omitted = permanent
+  reason?: string;
 };
 
 export type ScoreRecord = {
@@ -52,6 +90,7 @@ export type ScoreRecord = {
   confidence?: number;
   scoreSource?: ScoreSource;
   banEvasionMatch?: BanEvasionMatch;
+  bannedUserMatch?: BannedUserMatch;
 };
 
 export type ReportMeta = {

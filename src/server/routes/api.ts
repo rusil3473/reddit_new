@@ -110,6 +110,7 @@ type QueueApiPost = {
   type: 'post' | 'comment';
   confidence: number;
   banEvasion?: { matchedAuthor: string; similarity: number };
+  bannedUserMatch?: { matchedAuthor: string; similarity: number };
 };
 
 api.get('/queue', async (c) => {
@@ -190,6 +191,12 @@ api.get('/queue', async (c) => {
               similarity: scoreRecord.banEvasionMatch.similarity,
             }
           : undefined,
+        bannedUserMatch: scoreRecord?.bannedUserMatch
+          ? {
+              matchedAuthor: scoreRecord.bannedUserMatch.matchedAuthor,
+              similarity: scoreRecord.bannedUserMatch.similarity,
+            }
+          : undefined,
       };
     })
   );
@@ -222,6 +229,12 @@ api.get('/escalated', async (c) => {
           ? {
               matchedAuthor: scoreRecord.banEvasionMatch.matchedAuthor,
               similarity: scoreRecord.banEvasionMatch.similarity,
+            }
+          : undefined,
+        bannedUserMatch: scoreRecord?.bannedUserMatch
+          ? {
+              matchedAuthor: scoreRecord.bannedUserMatch.matchedAuthor,
+              similarity: scoreRecord.bannedUserMatch.similarity,
             }
           : undefined,
       };

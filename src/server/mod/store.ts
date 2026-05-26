@@ -1,5 +1,5 @@
 import { redis } from '@devvit/web/server';
-import type { AuditEntry, BannedSignal, ModerationRules, QueueItem, ReportMeta, ScoreRecord, SummaryStats } from '../../shared/mod';
+import type { AuditEntry, BannedSignal, BannedUserRecord, BannedUserSignal, ModerationRules, QueueItem, ReportMeta, ScoreRecord, SummaryStats } from '../../shared/mod';
 
 const scoreKey = (subredditId: string, postId: string) => `score:${subredditId}:${postId}`;
 const queueKey = (subredditId: string) => `queue:${subredditId}`;
@@ -165,6 +165,7 @@ export const writeScoreRecord = async (
     confidence: String(record.confidence ?? 0.4),
     scoreSource: record.scoreSource ?? 'gemini',
     banEvasionMatch: record.banEvasionMatch ? JSON.stringify(record.banEvasionMatch) : '',
+    bannedUserMatch: record.bannedUserMatch ? JSON.stringify(record.bannedUserMatch) : '',
   });
 
   if (options?.enqueue !== false) {
@@ -228,12 +229,32 @@ export const readScoreRecord = async (
     confidence: parseNumber(raw.confidence, 0.4),
     scoreSource: (raw.scoreSource as ScoreRecord['scoreSource']) ?? 'gemini',
     banEvasionMatch: raw.banEvasionMatch ? safeParseBanEvasion(raw.banEvasionMatch) : undefined,
+    bannedUserMatch: raw.bannedUserMatch ? safeParseBannedUserMatch(raw.bannedUserMatch) : undefined,
   };
 };
 
 const safeParseBanEvasion = (raw: string): ScoreRecord['banEvasionMatch'] => {
   try {
     const parsed = JSON.parse(raw) as ScoreRecord['banEvasionMatch'];
+    if (
+      parsed &&
+      typeof parsed.matchedAuthor === 'string' &&
+      typeof parsed.matchedPostId === 'string' &&
+      typeof parsed.similarity === 'number' &&
+      typeof parsed.threshold === 'number' &&
+      typeof parsed.timestamp === 'number'
+    ) {
+      return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
+};
+
+const safeParseBannedUserMatch = (raw: string): ScoreRecord['bannedUserMatch'] => {
+  try {
+    const parsed = JSON.parse(raw) as ScoreRecord['bannedUserMatch'];
     if (
       parsed &&
       typeof parsed.matchedAuthor === 'string' &&
@@ -674,4 +695,165 @@ export const backfillBannedSignalsFromAuthors = async (
   }
 
   return { added, skipped };
+};
+
+// ----- Banned-user corpus & registry ----------------------------------------
+//
+// Two per-subreddit Redis keys back the explicit-ban feature:
+//
+//   banned_users:{subredditId}        JSON list of BannedUserRecord
+//   banned_user_signals:{subredditId} ZSET of JSON-encoded BannedUserSignal,
+//                                     score = signal.timestamp
+//
+// Seeded only from action='remove' entries in author:actions:* at ban time
+// (per spec). Cleared selectively on unban.
+
+const BANNED_USER_SIGNALS_CAP = 2000;
+const bannedUsersKey = (subredditId: string) => `banned_users:${subredditId}`;
+const bannedUserSignalsKey = (subredditId: string) => `banned_user_signals:${subredditId}`;
+
+export const readBannedUsers = async (subredditId: string): Promise<BannedUserRecord[]> => {
+  const raw = await redis.get(bannedUsersKey(subredditId));
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e: unknown): e is BannedUserRecord =>
+        !!e && typeof (e as BannedUserRecord).authorName === 'string'
+    );
+  } catch {
+    return [];
+  }
+};
+
+export const isUserBanned = async (
+  subredditId: string,
+  authorName: string
+): Promise<boolean> => {
+  const list = await readBannedUsers(subredditId);
+  return list.some((e) => e.authorName === authorName);
+};
+
+export const addBannedUser = async (
+  subredditId: string,
+  record: BannedUserRecord
+): Promise<void> => {
+  const list = await readBannedUsers(subredditId);
+  const filtered = list.filter((e) => e.authorName !== record.authorName);
+  filtered.unshift(record);
+  await redis.set(bannedUsersKey(subredditId), JSON.stringify(filtered));
+};
+
+export const removeBannedUser = async (
+  subredditId: string,
+  authorName: string
+): Promise<void> => {
+  const list = await readBannedUsers(subredditId);
+  const filtered = list.filter((e) => e.authorName !== authorName);
+  await redis.set(bannedUsersKey(subredditId), JSON.stringify(filtered));
+};
+
+const addBannedUserSignal = async (
+  subredditId: string,
+  signal: BannedUserSignal
+): Promise<void> => {
+  const key = bannedUserSignalsKey(subredditId);
+  await redis.zAdd(key, { score: signal.timestamp, member: JSON.stringify(signal) });
+  await redis.zRemRangeByRank(key, 0, -BANNED_USER_SIGNALS_CAP - 1);
+};
+
+export const readBannedUserSignals = async (
+  subredditId: string
+): Promise<BannedUserSignal[]> => {
+  const raw = await redis.zRange(bannedUserSignalsKey(subredditId), 0, -1);
+  const out: BannedUserSignal[] = [];
+  for (const entry of raw) {
+    try {
+      const parsed = JSON.parse(typeof entry === 'string' ? entry : entry.member) as BannedUserSignal;
+      if (
+        parsed &&
+        typeof parsed.bannedUserName === 'string' &&
+        typeof parsed.postId === 'string' &&
+        Array.isArray(parsed.fingerprint)
+      ) {
+        out.push(parsed);
+      }
+    } catch {
+      // skip malformed
+    }
+  }
+  return out;
+};
+
+// seedBannedUserCorpus reads the per-author action history for the given
+// banned user and seeds banned_user_signals with all entries where
+// action === 'remove'. Idempotent within a single ban call (we always
+// clear+rebuild the user's signals via removeBannedUserSignals before
+// seeding, ensuring no duplicates).
+export const seedBannedUserCorpus = async (
+  subredditId: string,
+  authorName: string
+): Promise<{ added: number }> => {
+  const authorKey = `author:actions:${subredditId}:${authorName}`;
+  const raw = await redis.get(authorKey);
+  if (!raw) return { added: 0 };
+  let history: Array<{
+    postId?: unknown;
+    action?: unknown;
+    fingerprint?: unknown;
+    timestamp?: unknown;
+  }>;
+  try {
+    history = JSON.parse(raw);
+  } catch {
+    return { added: 0 };
+  }
+  if (!Array.isArray(history)) return { added: 0 };
+
+  let added = 0;
+  for (const entry of history) {
+    if (entry.action !== 'remove') continue;
+    if (typeof entry.postId !== 'string') continue;
+    if (!Array.isArray(entry.fingerprint)) continue;
+
+    const score = await readScoreRecord(subredditId, entry.postId);
+    const signal: BannedUserSignal = {
+      bannedUserName: authorName,
+      postId: entry.postId,
+      title: score?.title ?? entry.postId,
+      fingerprint: (entry.fingerprint as unknown[]).filter(
+        (t): t is string => typeof t === 'string'
+      ),
+      timestamp: typeof entry.timestamp === 'number' ? entry.timestamp : Date.now(),
+    };
+    await addBannedUserSignal(subredditId, signal);
+    added += 1;
+  }
+  return { added };
+};
+
+// removeBannedUserSignals purges all banned-user signals belonging to the
+// given user from the ZSET. Called on unban so future scoring stops
+// matching against this user's content.
+export const removeBannedUserSignals = async (
+  subredditId: string,
+  authorName: string
+): Promise<{ removed: number }> => {
+  const key = bannedUserSignalsKey(subredditId);
+  const raw = await redis.zRange(key, 0, -1);
+  let removed = 0;
+  for (const entry of raw) {
+    const member = typeof entry === 'string' ? entry : entry.member;
+    try {
+      const parsed = JSON.parse(member) as BannedUserSignal;
+      if (parsed.bannedUserName === authorName) {
+        await redis.zRem(key, [member]);
+        removed += 1;
+      }
+    } catch {
+      // skip malformed
+    }
+  }
+  return { removed };
 };
