@@ -113,7 +113,14 @@ triggers.post('/on-post-report', async (c) => {
       (typeof reporter?.name === 'string' ? reporter.name : null) ??
       (typeof reportedBy?.name === 'string' ? reportedBy.name : null) ??
       (typeof user?.name === 'string' ? user.name : null) ??
+      (typeof body.reporterName === 'string' ? body.reporterName : null) ??
+      (typeof body.reportedByName === 'string' ? body.reportedByName : null) ??
       null;
+    // Log event keys for debugging
+    console.log('onPostReport body keys:', Object.keys(body));
+    console.log('onPostReport reporter fields:', JSON.stringify({ reporter: body.reporter, reportedBy: body.reportedBy, user: body.user }));
+    // Store last report event for debugging
+    await redis.set(`debug:last_report_event:${context.subredditId}`, JSON.stringify(body));
     if (reporterName) {
       const key = `reports_filed:${context.subredditId}:${reporterName}`;
       const existing: Array<{ postId: string; title: string; reportedAt: number }> = JSON.parse(await redis.get(key) ?? '[]');

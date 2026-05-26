@@ -511,6 +511,13 @@ api.post('/rules', async (c) => {
   return c.json<RulesResponse>({ success: true, rules: await readRules(subredditId) });
 });
 
+api.get('/debug/last-report-event', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  const raw = await redis.get(`debug:last_report_event:${subredditId}`);
+  return c.json({ success: true, event: raw ? JSON.parse(raw) : null });
+});
+
 api.get('/user-stats', async (c) => {
   const subredditId = await getSubredditId(c.req.query('subreddit'));
   if (!subredditId) {
