@@ -16,6 +16,7 @@ import type {
 import { applyAction, scoreContent } from '../mod/pipeline';
 import { extractFingerprint, extractTrigrams, buildSnippet, type LearningSignal } from '../mod/llm';
 import {
+  backfillBannedSignalsFromAudit,
   readAuditEntriesPaged,
   readQueueItems,
   readReportedPosts,
@@ -493,6 +494,23 @@ api.post('/rules', async (c) => {
     communityRules: body.communityRules,
   });
   return c.json<RulesResponse>({ success: true, rules: await readRules(subredditId) });
+});
+
+// One-shot backfill of the ban-evasion corpus from existing audit entries.
+// Idempotent: existing (authorName, postId) pairs are skipped. Mod-gated
+// via the existing /api/* moderator-access middleware.
+api.post('/admin/backfill-banned-signals', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+  try {
+    const result = await backfillBannedSignalsFromAudit(subredditId);
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    console.error('backfill banned signals failed', error);
+    return c.json<ErrorResponse>({ success: false, error: 'backfill_failed' }, 500);
+  }
 });
 
 api.get('/debug/last-report-event', async (c) => {

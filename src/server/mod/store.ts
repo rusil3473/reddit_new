@@ -562,7 +562,56 @@ export const readBannedSignals = async (
   return out;
 };
 
-// backfillBannedSignals scans the existing per-author action history
+// backfillBannedSignalsFromAudit walks the audit log for the subreddit,
+// finds remove-actions, looks up the corresponding score records (which
+// carry author + title + body + reasons), and seeds the banned-signals
+// corpus. Idempotent: existing (authorName, postId) pairs are skipped.
+//
+// This is the natural starting point because the audit log is the
+// canonical record of past mod removals. The author-history-based variant
+// (backfillBannedSignalsFromAuthors) remains available for callers that
+// already have a known set of usernames.
+export const backfillBannedSignalsFromAudit = async (
+  subredditId: string,
+  limit = 1000
+): Promise<{ added: number; skipped: number; scanned: number }> => {
+  const entries = parseJsonList<AuditEntry>((await redis.get(auditKey(subredditId))) ?? null);
+  const removes = entries.filter((e) => e.action === 'remove').slice(0, limit);
+
+  const existing = await readBannedSignals(subredditId);
+  const seen = new Set(existing.map((s) => `${s.authorName}:${s.postId}`));
+
+  let added = 0;
+  let skipped = 0;
+
+  for (const entry of removes) {
+    const score = await readScoreRecord(subredditId, entry.postId);
+    if (!score) {
+      skipped += 1;
+      continue;
+    }
+    const dedupeKey = `${score.authorName}:${score.postId}`;
+    if (seen.has(dedupeKey)) {
+      skipped += 1;
+      continue;
+    }
+    seen.add(dedupeKey);
+
+    // Late-bind extractFingerprint to avoid a circular import at module load.
+    const { extractFingerprint } = await import('./llm');
+    const signal: BannedSignal = {
+      authorName: score.authorName,
+      postId: score.postId,
+      title: score.title,
+      fingerprint: extractFingerprint(score.title, score.body),
+      timestamp: typeof entry.timestamp === 'number' ? entry.timestamp : Date.now(),
+    };
+    await addBannedSignal(subredditId, signal);
+    added += 1;
+  }
+
+  return { added, skipped, scanned: removes.length };
+};
 // (author:actions:{subredditId}:{username}) and seeds the banned-signals
 // corpus with all `remove` actions that aren't already present.
 //

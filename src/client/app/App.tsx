@@ -42,7 +42,10 @@ export const App = () => {
   const [auditFilter, setAuditFilter] = useState('');
   const [approveThreshold, setApproveThreshold] = useState(0.15);
   const [removeThreshold, setRemoveThreshold] = useState(0.85);
+  const [banEvasionThreshold, setBanEvasionThreshold] = useState(0.6);
   const [rulesText, setRulesText] = useState('Be civil\nNo direct threats\nNo promotional spam\nRespect reporting process');
+  const [savingRules, setSavingRules] = useState(false);
+  const [backfillingBanSignals, setBackfillingBanSignals] = useState(false);
   const [loadingQueue, setLoadingQueue] = useState(true);
   const [rescoring, setRescoring] = useState<Record<string, boolean>>({});
   const [loadingReported, setLoadingReported] = useState(true);
@@ -199,6 +202,69 @@ export const App = () => {
     }
   };
 
+  type RulesPayload = {
+    autoApproveThreshold: number;
+    autoRemoveThreshold: number;
+    banEvasionThreshold: number;
+    communityRules: string[];
+  };
+
+  const loadRules = async (): Promise<void> => {
+    try {
+      const res = await apiClient.request<{ success: boolean; rules: RulesPayload }>('/api/rules');
+      if (!res.success || !res.rules) return;
+      setApproveThreshold(res.rules.autoApproveThreshold);
+      setRemoveThreshold(res.rules.autoRemoveThreshold);
+      setBanEvasionThreshold(res.rules.banEvasionThreshold);
+      setRulesText(res.rules.communityRules.join('\n'));
+    } catch {
+      // first-load failure is non-fatal; defaults already in state
+    }
+  };
+
+  const saveRules = async (): Promise<void> => {
+    setSavingRules(true);
+    try {
+      const communityRules = rulesText
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      await apiClient.request<{ success: boolean }>('/api/rules', {
+        method: 'POST',
+        body: JSON.stringify({
+          autoApproveThreshold: approveThreshold,
+          autoRemoveThreshold: removeThreshold,
+          banEvasionThreshold: banEvasionThreshold,
+          communityRules,
+        }),
+      });
+      addToast('Rules saved', 'success');
+    } catch {
+      addToast('Failed to save rules', 'error');
+    } finally {
+      setSavingRules(false);
+    }
+  };
+
+  const runBackfillBanSignals = async (): Promise<void> => {
+    setBackfillingBanSignals(true);
+    try {
+      const res = await apiClient.request<{ success: boolean; added: number; skipped: number }>(
+        '/api/admin/backfill-banned-signals',
+        { method: 'POST' }
+      );
+      if (res.success) {
+        addToast(`Backfill complete: +${res.added} added, ${res.skipped} skipped`, 'success');
+      } else {
+        addToast('Backfill failed', 'error');
+      }
+    } catch {
+      addToast('Backfill failed', 'error');
+    } finally {
+      setBackfillingBanSignals(false);
+    }
+  };
+
   useEffect(() => {
     const timer = setTimeout(() => {
       void (async () => {
@@ -212,6 +278,7 @@ export const App = () => {
         void refreshEscalated();
         void refreshAudit();
         void refreshStats();
+        void loadRules();
       })();
     }, 0);
     const interval = setInterval(() => {
@@ -824,11 +891,35 @@ export const App = () => {
               <section className="stat-card space-y-4 p-4">
                 <SliderField label="Auto Approve Threshold" value={approveThreshold} onChange={setApproveThreshold} />
                 <SliderField label="Auto Remove Threshold" value={removeThreshold} onChange={setRemoveThreshold} />
+                <SliderField label="Ban Evasion Threshold" value={banEvasionThreshold} onChange={setBanEvasionThreshold} />
+                <p className="text-xs text-[#64748B]">
+                  When a new post's title + body matches a previously-removed post's content above this similarity, mods are alerted. Higher = stricter (fewer alerts). Default 0.6.
+                </p>
+                <div className="border-t border-[#22263A] pt-3">
+                  <button
+                    type="button"
+                    onClick={() => void runBackfillBanSignals()}
+                    disabled={backfillingBanSignals}
+                    className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50"
+                  >
+                    {backfillingBanSignals ? 'Backfilling…' : 'Backfill ban-evasion corpus from history'}
+                  </button>
+                  <p className="mt-1 text-xs text-[#64748B]">
+                    One-shot: scans existing per-author action history and seeds the ban-evasion corpus from prior removals. Idempotent — safe to re-run.
+                  </p>
+                </div>
               </section>
               <section className="stat-card space-y-3 p-4">
                 <label className="text-sm font-semibold">Community Rules (one per line)</label>
                 <textarea className="min-h-44 w-full rounded-lg border border-[#2A2D3E] bg-[#0F1117] px-3 py-2 text-sm text-[#F1F5F9] outline-none placeholder:text-[#64748B] focus:border-[#7C5CFC]" value={rulesText} onChange={(event) => setRulesText(event.target.value)} />
-                <button className="rounded-lg bg-[#7C5CFC] px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110">Save Rules</button>
+                <button
+                  type="button"
+                  onClick={() => void saveRules()}
+                  disabled={savingRules}
+                  className="rounded-lg bg-[#7C5CFC] px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-50"
+                >
+                  {savingRules ? 'Saving…' : 'Save Rules'}
+                </button>
               </section>
             </div>
           )}
