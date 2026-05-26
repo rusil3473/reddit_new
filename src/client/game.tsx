@@ -528,7 +528,6 @@ const App = () => {
             <div className="flex items-center gap-3">
               <button type="button" onClick={() => { setViewingUser(null); setUserStats(null); }} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] hover:text-white">← Back</button>
               <h2 className="text-2xl font-bold">u/{viewingUser}</h2>
-              <button type="button" onClick={() => void openUserStats(viewingUser)} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button>
             </div>
             {loadingUserStats && <div className="space-y-3"><SkeletonCard /><SkeletonCard /></div>}
             {!loadingUserStats && userStats && (
@@ -551,7 +550,7 @@ const App = () => {
 
                 {userTab === 'approved' && (
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2"><select value={userApprovedSort} onChange={(e) => setUserApprovedSort(e.target.value as FeedSort)} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
+                    <div className="flex items-center gap-2"><button type="button" onClick={() => void openUserStats(viewingUser)} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button><select value={userApprovedSort} onChange={(e) => setUserApprovedSort(e.target.value as FeedSort)} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
                     {[...userStats.posts.approved].sort((a, b) => userApprovedSort === 'risk_desc' ? b.score - a.score : userApprovedSort === 'risk_asc' ? a.score - b.score : b.timestamp - a.timestamp).map((p) => (
                       <article key={p.postId} className="case-card p-3 grid gap-3 lg:grid-cols-[1fr_auto]">
                         <div className="space-y-2">
@@ -577,7 +576,7 @@ const App = () => {
 
                 {userTab === 'removed' && (
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2"><select value={userRemovedSort} onChange={(e) => setUserRemovedSort(e.target.value as FeedSort)} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
+                    <div className="flex items-center gap-2"><button type="button" onClick={() => void openUserStats(viewingUser)} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button><select value={userRemovedSort} onChange={(e) => setUserRemovedSort(e.target.value as FeedSort)} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-1.5 text-sm text-[#94A3B8] outline-none"><option value="risk_desc">Risk score ↓</option><option value="risk_asc">Risk score ↑</option><option value="newest">Newest</option></select></div>
                     {[...userStats.posts.removed].sort((a, b) => userRemovedSort === 'risk_desc' ? b.score - a.score : userRemovedSort === 'risk_asc' ? a.score - b.score : b.timestamp - a.timestamp).map((p) => (
                       <article key={p.postId} className="case-card p-3 grid gap-3 lg:grid-cols-[1fr_auto]">
                         <div className="space-y-2">
@@ -604,6 +603,7 @@ const App = () => {
                 {userTab === 'reportsReceived' && (
                   <div className="space-y-2">
                     <div className="flex items-center gap-2">
+                      <button type="button" onClick={() => void openUserStats(viewingUser)} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button>
                       <select value={reportsReceivedSort} onChange={(e) => setReportsReceivedSort(e.target.value as 'count' | 'score' | 'recent')} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-3 py-2 text-sm text-[#94A3B8] outline-none">
                         <option value="recent">Sort by: Recent</option>
                         <option value="count">Sort by: Report count</option>
@@ -639,6 +639,7 @@ const App = () => {
 
                 {userTab === 'reportsFiled' && (
                   <div className="space-y-2">
+                    <div className="flex items-center gap-2"><button type="button" onClick={() => void openUserStats(viewingUser)} disabled={loadingUserStats} className="rounded-md border border-[#2A2D3E] bg-[#1A1D27] px-2 py-1.5 text-sm text-[#94A3B8] transition hover:text-white disabled:opacity-50">↻ Refresh</button></div>
                     {userStats.reportsFiled.map((p) => (
                       <article key={p.postId} className="case-card p-3 space-y-2">
                         <h4 className="font-semibold">{p.title}</h4>
