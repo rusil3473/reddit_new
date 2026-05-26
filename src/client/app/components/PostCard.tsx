@@ -2,7 +2,7 @@ import type { QueuePost } from '../types';
 import { ScoreBar } from './ScoreBar';
 import { Chip } from './Chip';
 import { BanEvasionChip } from './BanEvasionChip';
-import { BannedUserBanner } from './BannedUserBanner';
+import { BannedUserBadge } from './BannedUserBadge';
 
 export type PostCardAction =
   | { kind: 'approve' }
@@ -45,16 +45,18 @@ const ACTION_BUTTON_CLASS: Record<PostCardAction['kind'], string> = {
 // PostCard is the unified queue/escalated/reported/processed list card.
 // Layout:
 //
-//   [optional BannedUserBanner — full width across both columns]
-//   ┌─────────────────────────────────────────────┬──────────────┐
-//   │ [☐] title                       u/author    │ Approve      │
-//   │ ScoreBar                                    │ Remove       │
-//   │ [reason chips]                              │ Escalate     │
-//   │                                             │ Rescore (sm) │
-//   └─────────────────────────────────────────────┴──────────────┘
+//   ┌──────────────────────────────────────┬───────────────────────┐
+//   │ [☐] title                            │ [⛔ NN% u/banned]     │  (badge only on match)
+//   │     u/author (underlined link)       │ Approve               │
+//   │                                      │ Remove                │
+//   │ ScoreBar (full width)                │ Escalate              │
+//   │ [reason chips]                       │ Rescore               │
+//   └──────────────────────────────────────┴───────────────────────┘
 //
-// Action column is fixed-width and top-aligned; buttons are filled pills
-// rather than text-only links so affordance is obvious without hover.
+// The post author sits directly under the title (always). When the post
+// matches a moderator-banned user's removed corpus, a compact red badge
+// is rendered top-right with the matched username as a click target.
+// Action buttons stack vertically below the badge in the same column.
 export const PostCard = ({
   post,
   checkbox,
@@ -65,13 +67,13 @@ export const PostCard = ({
   onAuthorClick,
 }: PostCardProps) => {
   const checked = checkbox?.checked ?? false;
-  const showBannedUserBanner = Boolean(post.bannedUserMatch);
-  const showBanEvasionChip = Boolean(post.banEvasion) && !showBannedUserBanner;
+  const showBannedUserBadge = Boolean(post.bannedUserMatch);
+  const showBanEvasionChip = Boolean(post.banEvasion) && !showBannedUserBadge;
 
   // Filter the auto-injected ban-evasion / banned-user reason strings out of
-  // the chip list — they are already rendered as a dedicated chip / banner.
+  // the chip list — they are already rendered as a dedicated chip / badge.
   const visibleReasons = post.reasons.filter((reason) => {
-    if (showBannedUserBanner && reason.startsWith('Matches removed posts of banned')) return false;
+    if (showBannedUserBadge && reason.startsWith('Matches removed posts of banned')) return false;
     if (showBanEvasionChip && reason.startsWith('Possible ban evasion')) return false;
     return true;
   });
@@ -82,16 +84,6 @@ export const PostCard = ({
         checked ? 'border-l-[3px] border-l-[#7C5CFC] bg-[#22263a]' : ''
       }`}
     >
-      {showBannedUserBanner && post.bannedUserMatch && (
-        <div className="lg:col-span-2">
-          <BannedUserBanner
-            matchedAuthor={post.bannedUserMatch.matchedAuthor}
-            similarity={post.bannedUserMatch.similarity}
-            onAuthorClick={onAuthorClick}
-          />
-        </div>
-      )}
-
       <div className="min-w-0 space-y-3">
         <div className="flex items-start gap-3">
           {checkbox && (
@@ -105,14 +97,14 @@ export const PostCard = ({
           )}
           <div className="min-w-0 flex-1">
             <h3 className="break-words text-lg font-semibold leading-snug">{post.title}</h3>
+            <button
+              type="button"
+              onClick={() => onAuthorClick(post.author)}
+              className="mt-1 inline-flex items-center text-sm text-[#94A3B8] underline decoration-dotted underline-offset-4 transition hover:text-[#7C5CFC]"
+            >
+              u/{post.author}
+            </button>
           </div>
-          <button
-            type="button"
-            className="shrink-0 text-sm text-[#64748B] hover:text-[#7C5CFC] hover:underline"
-            onClick={() => onAuthorClick(post.author)}
-          >
-            u/{post.author}
-          </button>
         </div>
 
         <ScoreBar score={post.score} />
@@ -133,23 +125,32 @@ export const PostCard = ({
         )}
       </div>
 
-      <div className="flex flex-wrap items-start justify-end gap-2 lg:flex-col lg:flex-nowrap lg:items-stretch">
-        {actions.map((kind) => {
-          const isRescore = kind === 'rescore';
-          const busy = isRescore ? rescoring : processing;
-          const label = isRescore && rescoring ? '⟳…' : ACTION_LABEL[kind];
-          return (
-            <button
-              key={kind}
-              type="button"
-              disabled={busy}
-              onClick={() => onAction(kind)}
-              className={`rounded-md border bg-transparent px-3 py-1.5 text-sm font-semibold transition disabled:opacity-50 ${ACTION_BUTTON_CLASS[kind]}`}
-            >
-              {label}
-            </button>
-          );
-        })}
+      <div className="flex flex-col items-end gap-2 lg:items-stretch">
+        {showBannedUserBadge && post.bannedUserMatch && (
+          <BannedUserBadge
+            matchedAuthor={post.bannedUserMatch.matchedAuthor}
+            similarity={post.bannedUserMatch.similarity}
+            onAuthorClick={onAuthorClick}
+          />
+        )}
+        <div className="flex flex-wrap items-start justify-end gap-2 lg:flex-col lg:flex-nowrap lg:items-stretch">
+          {actions.map((kind) => {
+            const isRescore = kind === 'rescore';
+            const busy = isRescore ? rescoring : processing;
+            const label = isRescore && rescoring ? '⟳…' : ACTION_LABEL[kind];
+            return (
+              <button
+                key={kind}
+                type="button"
+                disabled={busy}
+                onClick={() => onAction(kind)}
+                className={`rounded-md border bg-transparent px-3 py-1.5 text-sm font-semibold transition disabled:opacity-50 ${ACTION_BUTTON_CLASS[kind]}`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </article>
   );
