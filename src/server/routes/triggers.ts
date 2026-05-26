@@ -5,7 +5,6 @@ import { createPost } from '../core/post';
 import { scoreContent } from '../mod/pipeline';
 import { addSiqPostId, incrementReportAndMeta, isSiqPostId } from '../mod/store';
 import type { ScoreContentRequest } from '../../shared/mod';
-import { redis } from '@devvit/web/server';
 
 export const triggers = new Hono();
 
@@ -105,28 +104,9 @@ triggers.post('/on-post-report', async (c) => {
       authorName: payload.authorName,
     });
 
-    // Track who filed this report - try multiple paths for reporter identity
-    const reporter = typeof body.reporter === 'object' && body.reporter !== null ? (body.reporter as Record<string, unknown>) : null;
-    const reportedBy = typeof body.reportedBy === 'object' && body.reportedBy !== null ? (body.reportedBy as Record<string, unknown>) : null;
-    const user = typeof body.user === 'object' && body.user !== null ? (body.user as Record<string, unknown>) : null;
-    const reporterName =
-      (typeof reporter?.name === 'string' ? reporter.name : null) ??
-      (typeof reportedBy?.name === 'string' ? reportedBy.name : null) ??
-      (typeof user?.name === 'string' ? user.name : null) ??
-      (typeof body.reporterName === 'string' ? body.reporterName : null) ??
-      (typeof body.reportedByName === 'string' ? body.reportedByName : null) ??
-      null;
-    // Log event keys for debugging
-    console.log('onPostReport body keys:', Object.keys(body));
-    console.log('onPostReport reporter fields:', JSON.stringify({ reporter: body.reporter, reportedBy: body.reportedBy, user: body.user }));
-    // Store last report event for debugging
-    await redis.set(`debug:last_report_event:${context.subredditId}`, JSON.stringify(body));
-    if (reporterName) {
-      const key = `reports_filed:${context.subredditId}:${reporterName}`;
-      const existing: Array<{ postId: string; title: string; reportedAt: number }> = JSON.parse(await redis.get(key) ?? '[]');
-      existing.unshift({ postId: payload.postId, title: payload.title, reportedAt: Date.now() });
-      await redis.set(key, JSON.stringify(existing.slice(0, 100)));
-    }
+    // Note: Reddit's PostReport event does not expose the reporter's identity
+    // (reports are anonymous to mods by Reddit platform design), so we do not
+    // attempt to attribute reports to specific users here.
 
     if (meta.reportCount >= 3) {
       await scoreContent(context.subredditId, {

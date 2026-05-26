@@ -556,20 +556,20 @@ api.get('/user-stats', async (c) => {
     }
   }
 
-  // Get reports filed by this user
-  const reportsFiledRaw = await redis.get(`reports_filed:${subredditId}:${username}`);
-  const reportsFiled: Array<{ postId: string; title: string; reportedAt: number }> = reportsFiledRaw ? JSON.parse(reportsFiledRaw) : [];
+  // Get reports filed by this user is intentionally not supported.
+  // Reddit anonymizes the identity of regular user reports at the platform
+  // level, so this metric cannot be reliably attributed and was removed
+  // to avoid misleading data.
 
   return c.json({
     success: true,
     username,
-    counts: { approved: approved.length, removed: removed.length, reportsReceived: userReported.length, reportsFiled: reportsFiled.length },
+    counts: { approved: approved.length, removed: removed.length, reportsReceived: userReported.length },
     posts: { approved, removed },
     reportedPosts: await Promise.all(userReported.map(async (r) => {
       const rec = await readScoreRecord(subredditId, r.postId);
       return { postId: r.postId, title: r.title, reportCount: r.reportCount, lastReportedAt: r.lastReportedAt, status: r.status, score: rec?.score ?? 0.5, reasons: rec?.reasons ?? [] };
     })),
-    reportsFiled,
   });
 });
 
