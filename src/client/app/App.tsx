@@ -16,7 +16,7 @@ import {
 } from './constants';
 import { formatNow } from './utils';
 import { Chip } from './components/Chip';
-import { BanEvasionChip } from './components/BanEvasionChip';
+import { PostCard } from './components/PostCard';
 import { ScoreBar } from './components/ScoreBar';
 import { SkeletonCard } from './components/SkeletonCard';
 import { SliderField } from './components/SliderField';
@@ -697,39 +697,19 @@ export const App = () => {
               {!loadingQueue && sortedQueuePosts.map((post) => {
                 const checked = selectedIds.has(post.id);
                 return (
-                  <article key={post.id} className={`case-card hover-glow relative grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto] ${checked ? 'border-l-[3px] border-l-[#7C5CFC] bg-[#22263a]' : ''}`}>
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-2">
-                        <input type="checkbox" checked={checked} onChange={() => toggleSelect(post.id)} className="h-4 w-4 cursor-pointer accent-[#7C5CFC]" />
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
-                        <p className="mt-1 text-sm text-[#64748B]"><button type="button" className="hover:text-[#7C5CFC] hover:underline" onClick={() => void openUserStats(post.author)}>u/{post.author}</button></p>
-                      </div>
-                      <ScoreBar score={post.score} />
-                      <div className="flex flex-wrap gap-2">
-                        {post.banEvasion && (
-                          <BanEvasionChip
-                            matchedAuthor={post.banEvasion.matchedAuthor}
-                            similarity={post.banEvasion.similarity}
-                            onAuthorClick={(author) => void openUserStats(author)}
-                          />
-                        )}
-                        {post.reasons
-                          .filter((reason) => !(post.banEvasion && reason.startsWith('Possible ban evasion')))
-                          .map((reason) => (
-                            <Chip key={`${post.id}-${reason}`} label={reason} />
-                          ))}
-                      </div>
-                    </div>
-
-                    <div className="relative flex items-start justify-end gap-2 text-sm lg:flex-col lg:text-right">
-                      <button disabled={Boolean(rescoring[post.id])} className="action-link text-[#F59E0B]" onClick={() => void rescorePost(post.id)}>{rescoring[post.id] ? '⟳…' : ' Rescore'}</button>
-                      <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#22C55E]" onClick={() => void runSingleAction(post, 'approve')}>Approve</button>
-                      <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#EF4444]" onClick={() => void runSingleAction(post, 'remove')}>Remove</button>
-                      <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#7C5CFC]" onClick={() => void runSingleAction(post, 'escalate')}>Escalate</button>
-                    </div>
-                  </article>
+                  <PostCard
+                    key={post.id}
+                    post={post}
+                    checkbox={{ checked, onToggle: () => toggleSelect(post.id) }}
+                    actions={['approve', 'remove', 'escalate', 'rescore']}
+                    processing={Boolean(processingIds[post.id])}
+                    rescoring={Boolean(rescoring[post.id])}
+                    onAuthorClick={(author) => void openUserStats(author)}
+                    onAction={(kind) => {
+                      if (kind === 'rescore') void rescorePost(post.id);
+                      else void runSingleAction(post, kind);
+                    }}
+                  />
                 );
               })}
 
@@ -769,32 +749,18 @@ export const App = () => {
                 </div>
               )}
               {!loadingEscalated && sortedEscalated.map((post) => (
-                <article key={post.id} className="case-card hover-glow grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto]">
-                  <div className="space-y-3">
-                    <div>
-                      <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
-                      <p className="mt-1 text-sm text-[#64748B]"><button type="button" className="hover:text-[#7C5CFC] hover:underline" onClick={() => void openUserStats(post.author)}>u/{post.author}</button></p>
-                    </div>
-                    <ScoreBar score={post.score} />
-                    <div className="flex flex-wrap gap-2">
-                      {post.banEvasion && (
-                        <BanEvasionChip
-                          matchedAuthor={post.banEvasion.matchedAuthor}
-                          similarity={post.banEvasion.similarity}
-                          onAuthorClick={(author) => void openUserStats(author)}
-                        />
-                      )}
-                      {post.reasons
-                        .filter((reason) => !(post.banEvasion && reason.startsWith('Possible ban evasion')))
-                        .map((reason) => <Chip key={`${post.id}-${reason}`} label={reason} />)}
-                    </div>
-                  </div>
-                  <div className="relative flex items-start justify-end gap-2 text-sm lg:flex-col lg:text-right">
-                    <button disabled={Boolean(rescoring[post.id])} className="action-link text-[#F59E0B]" onClick={() => void rescorePost(post.id)}>{rescoring[post.id] ? '⟳…' : ' Rescore'}</button>
-                    <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#22C55E]" onClick={() => void runEscalatedAction(post, 'approve')}>Approve</button>
-                    <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#EF4444]" onClick={() => void runEscalatedAction(post, 'remove')}>Remove</button>
-                  </div>
-                </article>
+                <PostCard
+                  key={post.id}
+                  post={post}
+                  actions={['approve', 'remove', 'rescore']}
+                  processing={Boolean(processingIds[post.id])}
+                  rescoring={Boolean(rescoring[post.id])}
+                  onAuthorClick={(author) => void openUserStats(author)}
+                  onAction={(kind) => {
+                    if (kind === 'rescore') void rescorePost(post.id);
+                    else if (kind === 'approve' || kind === 'remove') void runEscalatedAction(post, kind);
+                  }}
+                />
               ))}
             </div>
           )}
@@ -816,23 +782,18 @@ export const App = () => {
                 </div>
               )}
               {!loadingReported && sortedReported.map((post) => (
-                <article key={post.id} className="case-card hover-glow grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto]">
-                  <div className="space-y-3">
-                    <div>
-                      <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
-                      <p className="mt-1 text-sm text-[#64748B]"><button type="button" className="hover:text-[#7C5CFC] hover:underline" onClick={() => void openUserStats(post.author)}>u/{post.author}</button></p>
-                    </div>
-                    <ScoreBar score={post.score} />
-                    <div className="flex flex-wrap gap-2">
-                      {post.reasons.map((reason) => <Chip key={`${post.id}-${reason}`} label={reason} />)}
-                    </div>
-                  </div>
-                  <div className="relative flex items-start justify-end gap-2 text-sm lg:flex-col lg:text-right">
-                    <button className="action-link text-[#22C55E]" onClick={() => void runSingleAction(post, 'approve')}>Approve</button>
-                    <button className="action-link text-[#EF4444]" onClick={() => void runSingleAction(post, 'remove')}>Remove</button>
-                    <button className="action-link text-[#7C5CFC]" onClick={() => void runSingleAction(post, 'escalate')}>Escalate</button>
-                  </div>
-                </article>
+                <PostCard
+                  key={post.id}
+                  post={post}
+                  actions={['approve', 'remove', 'escalate']}
+                  processing={Boolean(processingIds[post.id])}
+                  onAuthorClick={(author) => void openUserStats(author)}
+                  onAction={(kind) => {
+                    if (kind === 'approve' || kind === 'remove' || kind === 'escalate') {
+                      void runSingleAction(post, kind);
+                    }
+                  }}
+                />
               ))}
             </div>
           )}
@@ -854,21 +815,16 @@ export const App = () => {
                 </div>
               )}
               {!loadingProcessed && sortedProcessed.map((post) => (
-                <article key={post.id} className="case-card hover-glow grid gap-4 p-3 sm:p-4 lg:grid-cols-[1fr_auto]">
-                  <div className="space-y-3">
-                    <div>
-                      <h3 className="text-xl font-semibold leading-tight">{post.title}</h3>
-                      <p className="mt-1 text-sm text-[#64748B]"><button type="button" className="hover:text-[#7C5CFC] hover:underline" onClick={() => void openUserStats(post.author)}>u/{post.author}</button></p>
-                    </div>
-                    <ScoreBar score={post.score} />
-                    <div className="flex flex-wrap gap-2">
-                      {post.reasons.map((reason) => <Chip key={`${post.id}-${reason}`} label={reason} />)}
-                    </div>
-                  </div>
-                  <div className="relative flex items-start justify-end gap-2 text-sm lg:flex-col lg:text-right">
-                    <button disabled={Boolean(processingIds[post.id])} className="action-link text-[#7C5CFC]" onClick={() => void runSingleAction(post, 'escalate')}>Escalate</button>
-                  </div>
-                </article>
+                <PostCard
+                  key={post.id}
+                  post={post}
+                  actions={['escalate']}
+                  processing={Boolean(processingIds[post.id])}
+                  onAuthorClick={(author) => void openUserStats(author)}
+                  onAction={(kind) => {
+                    if (kind === 'escalate') void runSingleAction(post, 'escalate');
+                  }}
+                />
               ))}
             </div>
           )}

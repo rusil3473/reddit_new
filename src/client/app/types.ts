@@ -23,6 +23,10 @@ export type QueuePost = {
     matchedAuthor: string;
     similarity: number;
   };
+  bannedUserMatch?: {
+    matchedAuthor: string;
+    similarity: number;
+  };
 };
 
 export type QueueResponse = { type: 'QUEUE_POSTS_RESPONSE'; posts: QueuePost[] };
