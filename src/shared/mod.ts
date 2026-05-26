@@ -5,7 +5,32 @@ export type ScoreSource = 'gemini' | 'gemini+learning' | 'safety_override' | 'si
 export type ModerationRules = {
   autoApproveThreshold: number;
   autoRemoveThreshold: number;
+  banEvasionThreshold: number;
   communityRules: string[];
+};
+
+// BanEvasionMatch is attached to a ScoreRecord when a newly-scored post's
+// fingerprint matches a stored "banned signal" (a post previously removed
+// by mods in this subreddit) at or above the moderator-configured threshold.
+// It is informational: mods still decide the action.
+export type BanEvasionMatch = {
+  matchedAuthor: string;
+  matchedPostId: string;
+  similarity: number;   // 0..1, raw Jaccard score
+  threshold: number;    // threshold value at scoring time, for audit replay
+  timestamp: number;
+};
+
+// BannedSignal is one entry in the per-subreddit banned_signals:{subredditId}
+// corpus used for ban-evasion similarity matching. We treat removal-by-mod
+// as the proxy for "banned-author content" — we do not call any Reddit ban
+// API, we infer from removal history. See pipeline.ts for the producer.
+export type BannedSignal = {
+  authorName: string;
+  postId: string;
+  title: string;
+  fingerprint: string[];
+  timestamp: number;
 };
 
 export type ScoreRecord = {
@@ -26,6 +51,7 @@ export type ScoreRecord = {
   signalCountAtScoring?: number;
   confidence?: number;
   scoreSource?: ScoreSource;
+  banEvasionMatch?: BanEvasionMatch;
 };
 
 export type ReportMeta = {

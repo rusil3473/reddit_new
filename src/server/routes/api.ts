@@ -88,6 +88,7 @@ api.use('*', async (c, next) => {
 const rulesSchema = z.object({
   autoApproveThreshold: z.number().min(0).max(1),
   autoRemoveThreshold: z.number().min(0).max(1),
+  banEvasionThreshold: z.number().min(0).max(1),
   communityRules: z.array(z.string().min(1)).max(200),
 });
 
@@ -488,6 +489,7 @@ api.post('/rules', async (c) => {
   await writeRules(subredditId, {
     autoApproveThreshold: body.autoApproveThreshold,
     autoRemoveThreshold: body.autoRemoveThreshold,
+    banEvasionThreshold: body.banEvasionThreshold,
     communityRules: body.communityRules,
   });
   return c.json<RulesResponse>({ success: true, rules: await readRules(subredditId) });

@@ -1,5 +1,5 @@
 import { redis } from '@devvit/web/server';
-import type { AuditEntry, ModerationRules, QueueItem, ReportMeta, ScoreRecord, SummaryStats } from '../../shared/mod';
+import type { AuditEntry, BannedSignal, ModerationRules, QueueItem, ReportMeta, ScoreRecord, SummaryStats } from '../../shared/mod';
 
 const scoreKey = (subredditId: string, postId: string) => `score:${subredditId}:${postId}`;
 const queueKey = (subredditId: string) => `queue:${subredditId}`;
@@ -38,6 +38,7 @@ const writeJsonList = async <T>(key: string, items: T[]): Promise<void> => {
 const defaultRules: ModerationRules = {
   autoApproveThreshold: 0.15,
   autoRemoveThreshold: 0.85,
+  banEvasionThreshold: 0.6,
   communityRules: ['Rule 1: No spam', 'Rule 2: No harassment'],
 };
 
@@ -448,6 +449,7 @@ export const readRules = async (subredditId: string): Promise<ModerationRules> =
     return {
       autoApproveThreshold: typeof parsed.autoApproveThreshold === 'number' ? parsed.autoApproveThreshold : defaultRules.autoApproveThreshold,
       autoRemoveThreshold: typeof parsed.autoRemoveThreshold === 'number' ? parsed.autoRemoveThreshold : defaultRules.autoRemoveThreshold,
+      banEvasionThreshold: typeof parsed.banEvasionThreshold === 'number' ? parsed.banEvasionThreshold : defaultRules.banEvasionThreshold,
       communityRules: Array.isArray(parsed.communityRules) ? parsed.communityRules.filter((x): x is string => typeof x === 'string') : defaultRules.communityRules,
     };
   } catch {
@@ -493,4 +495,113 @@ export const readEscalatedPosts = async (subredditId: string): Promise<QueueItem
       suggested_action: (raw.suggested_action as QueueItem['suggested_action']) ?? 'review',
       claimedBy: raw.claimedBy,
     }));
+};
+
+// ----- Ban-evasion banned-signals corpus ------------------------------------
+//
+// banned_signals:{subredditId} is a Redis ZSET (score = timestamp) of
+// JSON-serialized BannedSignal entries. We append to it whenever a
+// moderator removes a post in this subreddit, treating mod removal as the
+// proxy for "banned-author content." We do not call any Reddit ban API.
+// Used by pipeline.ts to detect ban-evasion via Jaccard similarity.
+
+const BANNED_SIGNALS_CAP = 1000;
+const bannedSignalsKey = (subredditId: string) => `banned_signals:${subredditId}`;
+
+export const addBannedSignal = async (
+  subredditId: string,
+  signal: BannedSignal
+): Promise<void> => {
+  const key = bannedSignalsKey(subredditId);
+  await redis.zAdd(key, { score: signal.timestamp, member: JSON.stringify(signal) });
+  // Trim oldest beyond the cap (zRemRangeByRank removes entries by index range).
+  await redis.zRemRangeByRank(key, 0, -BANNED_SIGNALS_CAP - 1);
+};
+
+export const readBannedSignals = async (
+  subredditId: string
+): Promise<BannedSignal[]> => {
+  const raw = await redis.zRange(bannedSignalsKey(subredditId), 0, -1);
+  const out: BannedSignal[] = [];
+  for (const entry of raw) {
+    try {
+      const parsed = JSON.parse(typeof entry === 'string' ? entry : entry.member) as BannedSignal;
+      if (
+        parsed &&
+        typeof parsed.authorName === 'string' &&
+        typeof parsed.postId === 'string' &&
+        Array.isArray(parsed.fingerprint)
+      ) {
+        out.push(parsed);
+      }
+    } catch {
+      // ignore malformed entries
+    }
+  }
+  return out;
+};
+
+// backfillBannedSignals scans the existing per-author action history
+// (author:actions:{subredditId}:{username}) and seeds the banned-signals
+// corpus with all `remove` actions that aren't already present.
+//
+// Idempotent: existing (authorName, postId) pairs are skipped. Safe to call
+// repeatedly. The redis client used here only exposes per-key reads, so we
+// rely on a caller-supplied list of known authors. In practice the caller
+// is the /api/admin/backfill-banned-signals endpoint, which gathers
+// candidate usernames from the audit log.
+export const backfillBannedSignalsFromAuthors = async (
+  subredditId: string,
+  authorNames: string[]
+): Promise<{ added: number; skipped: number }> => {
+  const existing = await readBannedSignals(subredditId);
+  const seen = new Set(existing.map((s) => `${s.authorName}:${s.postId}`));
+
+  let added = 0;
+  let skipped = 0;
+
+  for (const authorName of authorNames) {
+    const authorKey = `author:actions:${subredditId}:${authorName}`;
+    const raw = await redis.get(authorKey);
+    if (!raw) continue;
+    let history: Array<{
+      postId?: unknown;
+      action?: unknown;
+      fingerprint?: unknown;
+      timestamp?: unknown;
+    }>;
+    try {
+      history = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(history)) continue;
+    for (const entry of history) {
+      if (entry.action !== 'remove') continue;
+      if (typeof entry.postId !== 'string') continue;
+      if (!Array.isArray(entry.fingerprint)) continue;
+
+      const dedupeKey = `${authorName}:${entry.postId}`;
+      if (seen.has(dedupeKey)) {
+        skipped += 1;
+        continue;
+      }
+      seen.add(dedupeKey);
+
+      const scoreRecord = await readScoreRecord(subredditId, entry.postId);
+      const signal: BannedSignal = {
+        authorName,
+        postId: entry.postId,
+        title: scoreRecord?.title ?? entry.postId,
+        fingerprint: (entry.fingerprint as unknown[]).filter(
+          (t): t is string => typeof t === 'string'
+        ),
+        timestamp: typeof entry.timestamp === 'number' ? entry.timestamp : Date.now(),
+      };
+      await addBannedSignal(subredditId, signal);
+      added += 1;
+    }
+  }
+
+  return { added, skipped };
 };

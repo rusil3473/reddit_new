@@ -89,7 +89,7 @@ const cosineSimilarity = (
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 };
 
-const jaccardSimilarity = (a: string[], b: string[]): number => {
+export const jaccardSimilarity = (a: string[], b: string[]): number => {
   if (a.length === 0 && b.length === 0) return 0;
   const setB = new Set(b);
   const overlap = a.filter((t) => setB.has(t)).length;
