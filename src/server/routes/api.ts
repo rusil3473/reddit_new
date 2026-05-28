@@ -16,12 +16,20 @@ import type {
 import { applyAction, scoreContent } from '../mod/pipeline';
 import { extractFingerprint, extractTrigrams, buildSnippet, type LearningSignal } from '../mod/llm';
 import {
+  addBannedUser,
+  backfillBannedSignalsFromAudit,
+  isUserBanned,
   readAuditEntriesPaged,
+  readBannedUsers,
   readQueueItems,
   readReportedPosts,
   readScoreRecord,
   readSummaryStats,
   readRules,
+  readSiqPostIds,
+  removeBannedUser,
+  removeBannedUserSignals,
+  seedBannedUserCorpus,
   writeRules,
   writeAuditEntry,
   addEscalatedPost,
@@ -88,7 +96,21 @@ api.use('*', async (c, next) => {
 const rulesSchema = z.object({
   autoApproveThreshold: z.number().min(0).max(1),
   autoRemoveThreshold: z.number().min(0).max(1),
+  banEvasionThreshold: z.number().min(0).max(1),
   communityRules: z.array(z.string().min(1)).max(200),
+});
+
+// Ban request: durationDays omitted/null/0 means permanent (per Reddit API).
+// Reason is bounded so we don't accidentally ship multi-paragraph text into
+// the modlog. Username is the bare handle without 'u/' prefix.
+const banUserSchema = z.object({
+  username: z.string().trim().min(1).max(50),
+  durationDays: z.number().int().min(0).max(999).optional(),
+  reason: z.string().trim().max(300).optional(),
+});
+
+const unbanUserSchema = z.object({
+  username: z.string().trim().min(1).max(50),
 });
 
 const keyProcessed = 'stats:processed';
@@ -102,27 +124,13 @@ type QueueApiPost = {
   title: string;
   author: string;
   score: number;
-  difficulty: 'easy' | 'medium' | 'hard' | 'legendary';
   reasons: string[];
   reportCount: number;
   createdAt: string;
   type: 'post' | 'comment';
   confidence: number;
-};
-
-const difficultyFromScore = (
-  score: number
-): 'easy' | 'medium' | 'hard' | 'legendary' => {
-  if (score < 0.3) {
-    return 'easy';
-  }
-  if (score <= 0.6) {
-    return 'medium';
-  }
-  if (score <= 0.85) {
-    return 'hard';
-  }
-  return 'legendary';
+  banEvasion?: { matchedAuthor: string; similarity: number };
+  bannedUserMatch?: { matchedAuthor: string; similarity: number };
 };
 
 api.get('/queue', async (c) => {
@@ -192,16 +200,28 @@ api.get('/queue', async (c) => {
         title: item.title,
         author: item.authorName,
         score: item.score,
-        difficulty: difficultyFromScore(item.score),
         reasons: item.reasons,
         reportCount: item.reportCount,
         createdAt: new Date(scoreRecord?.createdAt ?? Date.now()).toISOString(),
         type: 'post' as const,
         confidence: scoreRecord?.confidence ?? 0.4,
+        banEvasion: scoreRecord?.banEvasionMatch
+          ? {
+              matchedAuthor: scoreRecord.banEvasionMatch.matchedAuthor,
+              similarity: scoreRecord.banEvasionMatch.similarity,
+            }
+          : undefined,
+        bannedUserMatch: scoreRecord?.bannedUserMatch
+          ? {
+              matchedAuthor: scoreRecord.bannedUserMatch.matchedAuthor,
+              similarity: scoreRecord.bannedUserMatch.similarity,
+            }
+          : undefined,
       };
     })
   );
-  const filtered = posts.filter((p) => !p.title.includes('Smart Intelligent Queue Dashboard'));
+  const siqIds = new Set(await readSiqPostIds(subredditId));
+  const filtered = posts.filter((p) => !siqIds.has(p.id));
   filtered.sort((a, b) => b.score - a.score);
   await redis.set(keyQueueLength, String(filtered.length));
   return c.json({ type: 'QUEUE_POSTS_RESPONSE', posts: filtered });
@@ -213,18 +233,34 @@ api.get('/escalated', async (c) => {
     return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
   }
   const items = await readEscalatedPosts(subredditId);
-  const posts: QueueApiPost[] = items.map((item) => ({
-    id: item.postId,
-    title: item.title,
-    author: item.authorName,
-    score: item.score,
-    difficulty: difficultyFromScore(item.score),
-    reasons: item.reasons,
-    reportCount: item.reportCount,
-    createdAt: new Date().toISOString(),
-    type: 'post',
-    confidence: 0.4,
-  }));
+  const posts: QueueApiPost[] = await Promise.all(
+    items.map(async (item) => {
+      const scoreRecord = await readScoreRecord(subredditId, item.postId);
+      return {
+        id: item.postId,
+        title: item.title,
+        author: item.authorName,
+        score: item.score,
+        reasons: item.reasons,
+        reportCount: item.reportCount,
+        createdAt: new Date().toISOString(),
+        type: 'post' as const,
+        confidence: 0.4,
+        banEvasion: scoreRecord?.banEvasionMatch
+          ? {
+              matchedAuthor: scoreRecord.banEvasionMatch.matchedAuthor,
+              similarity: scoreRecord.banEvasionMatch.similarity,
+            }
+          : undefined,
+        bannedUserMatch: scoreRecord?.bannedUserMatch
+          ? {
+              matchedAuthor: scoreRecord.bannedUserMatch.matchedAuthor,
+              similarity: scoreRecord.bannedUserMatch.similarity,
+            }
+          : undefined,
+      };
+    })
+  );
   return c.json({ type: 'ESCALATED_POSTS_RESPONSE', posts });
 });
 
@@ -243,10 +279,6 @@ api.post('/escalated-action', async (c) => {
   if (!result.success) {
     return c.json(result, 500);
   }
-  await Promise.all([
-    redis.incrBy(keyProcessed, 1),
-    redis.incrBy(body.action === 'remove' ? keyRemoved : keyApproved, 1),
-  ]);
   return c.json({ success: true });
 });
 
@@ -266,7 +298,8 @@ api.get('/stats', async (c) => {
     ]);
 
   const queue = await readQueueItems(subredditId, 200, 0);
-  const filteredCount = queue.filter((item) => !item.title.includes('Smart Intelligent Queue Dashboard')).length;
+  const siqIds = new Set(await readSiqPostIds(subredditId));
+  const filteredCount = queue.filter((item) => !siqIds.has(item.postId)).length;
 
   const parsed = (value: string | null, fallback: number): number => {
     const n = Number.parseInt(value ?? '', 10);
@@ -355,11 +388,6 @@ api.post('/mod-action', async (c) => {
     await redis.set(authorKey, JSON.stringify(history.slice(0, 50)));
   }
 
-  await Promise.all([
-    redis.incrBy(keyProcessed, 1),
-    redis.incrBy(body.action === 'remove' ? keyRemoved : keyApproved, 1),
-  ]);
-
   return c.json({ success: true });
 });
 
@@ -406,13 +434,6 @@ api.post('/bulk-action', async (c) => {
     }
   }
 
-  if (updated > 0) {
-    await Promise.all([
-      redis.incrBy(keyProcessed, updated),
-      redis.incrBy(body.action === 'remove' ? keyRemoved : keyApproved, updated),
-    ]);
-  }
-
   return c.json({ success: true, updated });
 });
 
@@ -449,10 +470,13 @@ api.get('/reported-posts', async (c) => {
 
   const metas = await readReportedPosts(subredditId, status);
   const withScores = await Promise.all(
-    metas.map(async (meta) => ({
-      meta,
-      score: await readScoreRecord(subredditId, meta.postId),
-    }))
+    metas.map(async (meta) => {
+      const score = await readScoreRecord(subredditId, meta.postId);
+      if (meta.authorName === 'unknown' && score?.authorName) {
+        meta = { ...meta, authorName: score.authorName };
+      }
+      return { meta, score };
+    })
   );
 
   withScores.sort((a, b) =>
@@ -503,9 +527,220 @@ api.post('/rules', async (c) => {
   await writeRules(subredditId, {
     autoApproveThreshold: body.autoApproveThreshold,
     autoRemoveThreshold: body.autoRemoveThreshold,
+    banEvasionThreshold: body.banEvasionThreshold,
     communityRules: body.communityRules,
   });
   return c.json<RulesResponse>({ success: true, rules: await readRules(subredditId) });
+});
+
+// One-shot backfill of the ban-evasion corpus from existing audit entries.
+// Idempotent: existing (authorName, postId) pairs are skipped. Mod-gated
+// via the existing /api/* moderator-access middleware.
+api.post('/admin/backfill-banned-signals', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+  try {
+    const result = await backfillBannedSignalsFromAudit(subredditId);
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    console.error('backfill banned signals failed', error);
+    return c.json<ErrorResponse>({ success: false, error: 'backfill_failed' }, 500);
+  }
+});
+
+// Ban a user on Reddit and seed the per-user signal corpus from their
+// removed-post history. Atomic-ish: if the Reddit ban call fails we do
+// NOT mutate any local state, so the dashboard stays consistent with the
+// real ban status. If the local seeding fails after a successful Reddit
+// ban, we still record the registry entry — better to have a stale corpus
+// than to lose the audit trail.
+api.post('/ban-user', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  const subredditName = getTargetSubredditName(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+
+  const bodyRaw = await c.req.json().catch(() => ({}));
+  const parsed = banUserSchema.safeParse(bodyRaw);
+  if (!parsed.success) {
+    return c.json<ErrorResponse>({ success: false, error: 'invalid_ban_payload' }, 400);
+  }
+  const { username, durationDays, reason } = parsed.data;
+
+  const modId = (await reddit.getCurrentUsername()) || 'unknown_mod';
+  const today = new Date().toISOString().slice(0, 10);
+  const finalReason =
+    reason && reason.length > 0
+      ? reason
+      : `Banned via Modecule on ${today} by u/${modId}`;
+
+  // 1. Reddit ban (the source of truth). duration omitted = permanent.
+  try {
+    await reddit.banUser({
+      username,
+      subredditName,
+      reason: finalReason,
+      ...(typeof durationDays === 'number' && durationDays > 0 ? { duration: durationDays } : {}),
+    });
+  } catch (error) {
+    console.error('reddit.banUser failed', error);
+    return c.json<ErrorResponse>(
+      { success: false, error: 'reddit_ban_failed' },
+      500
+    );
+  }
+
+  // 2. Local registry + corpus seed. Clear any stale signals for this user
+  // before seeding so re-bans are clean.
+  await removeBannedUserSignals(subredditId, username);
+  await addBannedUser(subredditId, {
+    authorName: username,
+    bannedAt: Date.now(),
+    bannedBy: modId,
+    durationDays: typeof durationDays === 'number' && durationDays > 0 ? durationDays : undefined,
+    reason: finalReason,
+  });
+  const seed = await seedBannedUserCorpus(subredditId, username);
+
+  return c.json({ success: true, seeded: seed.added });
+});
+
+// Unban a user on Reddit and clear their signals from the per-user corpus.
+// Symmetric atomicity rules to /ban-user: Reddit call first, local mutation
+// only if the Reddit call succeeded.
+api.post('/unban-user', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  const subredditName = getTargetSubredditName(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+
+  const bodyRaw = await c.req.json().catch(() => ({}));
+  const parsed = unbanUserSchema.safeParse(bodyRaw);
+  if (!parsed.success) {
+    return c.json<ErrorResponse>({ success: false, error: 'invalid_unban_payload' }, 400);
+  }
+  const { username } = parsed.data;
+
+  try {
+    await reddit.unbanUser(username, subredditName);
+  } catch (error) {
+    console.error('reddit.unbanUser failed', error);
+    return c.json<ErrorResponse>(
+      { success: false, error: 'reddit_unban_failed' },
+      500
+    );
+  }
+
+  await removeBannedUser(subredditId, username);
+  const cleared = await removeBannedUserSignals(subredditId, username);
+
+  return c.json({ success: true, cleared: cleared.removed });
+});
+
+api.get('/banned-users', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+  const list = await readBannedUsers(subredditId);
+  return c.json({ success: true, bannedUsers: list });
+});
+
+api.get('/debug/last-report-event', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  const raw = await redis.get(`debug:last_report_event:${subredditId}`);
+  return c.json({ success: true, event: raw ? JSON.parse(raw) : null });
+});
+
+api.get('/user-stats', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+  const username = c.req.query('username');
+  if (!username) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_username' }, 400);
+  }
+
+  // Read author action history
+  const authorKey = `author:actions:${subredditId}:${username}`;
+  const raw = await redis.get(authorKey);
+  const actions: Array<{ postId: string; action: string; score: number; timestamp: number }> = raw ? JSON.parse(raw) : [];
+
+  // Enrich with titles from score records
+  const posts = await Promise.all(
+    actions.map(async (a) => {
+      const rec = await readScoreRecord(subredditId, a.postId);
+      return { postId: a.postId, title: rec?.title ?? a.postId, action: a.action, score: a.score, timestamp: a.timestamp, reasons: rec?.reasons ?? [] };
+    })
+  );
+
+  const approved = posts.filter((p) => p.action === 'approve');
+  const removed = posts.filter((p) => p.action === 'remove');
+
+  // Get reported posts by this author (check both report meta and score records)
+  const allReported = await readReportedPosts(subredditId, 'all');
+  const userReported: typeof allReported = [];
+  for (const r of allReported) {
+    if (r.authorName === username) {
+      userReported.push(r);
+    } else if (r.authorName === 'unknown') {
+      const rec = await readScoreRecord(subredditId, r.postId);
+      if (rec?.authorName === username) userReported.push(r);
+    }
+  }
+
+  // Get reports filed by this user is intentionally not supported.
+  // Reddit anonymizes the identity of regular user reports at the platform
+  // level, so this metric cannot be reliably attributed and was removed
+  // to avoid misleading data.
+
+  const banned = await isUserBanned(subredditId, username);
+
+  return c.json({
+    success: true,
+    username,
+    isBanned: banned,
+    counts: { approved: approved.length, removed: removed.length, reportsReceived: userReported.length },
+    posts: { approved, removed },
+    reportedPosts: await Promise.all(userReported.map(async (r) => {
+      const rec = await readScoreRecord(subredditId, r.postId);
+      return { postId: r.postId, title: r.title, reportCount: r.reportCount, lastReportedAt: r.lastReportedAt, status: r.status, score: rec?.score ?? 0.5, reasons: rec?.reasons ?? [] };
+    })),
+  });
+});
+
+api.post('/rescore', async (c) => {
+  const subredditId = await getSubredditId(c.req.query('subreddit'));
+  if (!subredditId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_subreddit_id' }, 400);
+  }
+
+  const { postId } = await c.req.json<{ postId: string }>();
+  if (!postId) {
+    return c.json<ErrorResponse>({ success: false, error: 'missing_post_id' }, 400);
+  }
+
+  const rec = await readScoreRecord(subredditId, postId);
+  if (!rec) {
+    return c.json<ErrorResponse>({ success: false, error: 'score_record_not_found' }, 404);
+  }
+
+  try {
+    const updated = await scoreContent(subredditId, {
+      postId: rec.postId, title: rec.title, body: rec.body,
+      authorName: rec.authorName, accountAgeDays: rec.accountAgeDays,
+      karma: rec.karma, reportCount: rec.reportCount, priorFlagsInSub: rec.priorFlagsInSub,
+    }, { forceRescore: true });
+    return c.json({ success: true, post: { id: updated.postId, score: updated.score, reasons: updated.reasons, label: updated.label } });
+  } catch {
+    return c.json<ErrorResponse>({ success: false, error: 'rescore_failed' }, 500);
+  }
 });
 
 api.post('/score-content', async (c) => {

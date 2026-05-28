@@ -20,12 +20,19 @@ const toScorePayload = (
     return null;
   }
 
+  // Try multiple paths for author name
+  const authorName =
+    (typeof author?.name === 'string' ? author.name : null) ??
+    (typeof (post as Record<string, unknown>).authorName === 'string' ? (post as Record<string, unknown>).authorName as string : null) ??
+    (typeof (post as Record<string, unknown>).author === 'string' ? (post as Record<string, unknown>).author as string : null) ??
+    'unknown';
+
   return {
     postId: post.id,
     title: typeof post.title === 'string' ? post.title : '(untitled)',
-    body: typeof post.selftext === 'string' ? post.selftext : '',
-    authorName: typeof author?.name === 'string' ? author.name : 'unknown',
-    accountAgeDays: 365,
+    body: typeof post.selftext === 'string' ? (post.selftext as string) : '',
+    authorName,
+    accountAgeDays: 0,
     karma: typeof author?.karma === 'number' ? author.karma : 0,
     reportCount:
       typeof reportCountOverride === 'number'
@@ -96,6 +103,10 @@ triggers.post('/on-post-report', async (c) => {
       title: payload.title,
       authorName: payload.authorName,
     });
+
+    // Note: Reddit's PostReport event does not expose the reporter's identity
+    // (reports are anonymous to mods by Reddit platform design), so we do not
+    // attempt to attribute reports to specific users here.
 
     if (meta.reportCount >= 3) {
       await scoreContent(context.subredditId, {

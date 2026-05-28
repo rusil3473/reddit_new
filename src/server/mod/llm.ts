@@ -89,7 +89,7 @@ const cosineSimilarity = (
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 };
 
-const jaccardSimilarity = (a: string[], b: string[]): number => {
+export const jaccardSimilarity = (a: string[], b: string[]): number => {
   if (a.length === 0 && b.length === 0) return 0;
   const setB = new Set(b);
   const overlap = a.filter((t) => setB.has(t)).length;
@@ -344,10 +344,9 @@ export const scoreWithGemini = async (
     'Use this weighted model exactly:',
     'Signal 1 Content analysis (45%): threat/hate/scam/spam/harassment/deception intent, coercion, phishing style, manipulation language, suspicious CTA patterns. Include prior heuristics but generalize beyond literal words. cap 0..1.',
     'Signal 2 Report count (25%): 0->0.0, 1->0.3, 2->0.55, 3->0.75, 4+->0.90.',
-    'Signal 3 Account signals (20%): age<7 +0.40, age7-30 +0.20, age>30 +0.0, karma<0 +0.40, karma=0 and age>180 days +0.15, karma1-10 +0.10, karma>10 +0.0. cap 0..1.',
+    'Signal 3 Account signals (20%): age=0 means unknown (treat as neutral +0.0), age<7 +0.40, age7-30 +0.20, age>30 +0.0, karma<0 +0.40, karma=0 and age>180 days +0.15, karma1-10 +0.10, karma>10 +0.0. cap 0..1.',
     'Signal 4 Community rule match (10%): compare against communityRules and infer likely violations by meaning, not only keyword overlap. cap 1.0.',
     'finalScore=(content*0.45)+(report*0.25)+(account*0.20)+(rule*0.10). Lower score means approveable. Higher score means rejectable.',
-    'Difficulty mapping: <0.30 EASY, 0.30-0.59 MEDIUM, 0.60-0.84 HARD, >=0.85 LEGENDARY',
     'Reasons generation constraints:',
     'Only mention signals that fired, always add content reasons when content score>0.2, always add report reason when reports>0, add account reason only when account signal meaningfully contributed, max 4 reasons.',
     'Before finalizing output, run a self-check: if the post asks users for sensitive credentials/codes/money transfer under promise/pressure, do not output low_risk.',
