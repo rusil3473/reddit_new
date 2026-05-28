@@ -344,7 +344,7 @@ export const scoreWithGemini = async (
     'Use this weighted model exactly:',
     'Signal 1 Content analysis (45%): threat/hate/scam/spam/harassment/deception intent, coercion, phishing style, manipulation language, suspicious CTA patterns. Include prior heuristics but generalize beyond literal words. cap 0..1.',
     'Signal 2 Report count (25%): 0->0.0, 1->0.3, 2->0.55, 3->0.75, 4+->0.90.',
-    'Signal 3 Account signals (20%): age<7 +0.40, age7-30 +0.20, age>30 +0.0, karma<0 +0.40, karma=0 and age>180 days +0.15, karma1-10 +0.10, karma>10 +0.0. cap 0..1.',
+    'Signal 3 Account signals (20%): age=0 means unknown (treat as neutral +0.0), age<7 +0.40, age7-30 +0.20, age>30 +0.0, karma<0 +0.40, karma=0 and age>180 days +0.15, karma1-10 +0.10, karma>10 +0.0. cap 0..1.',
     'Signal 4 Community rule match (10%): compare against communityRules and infer likely violations by meaning, not only keyword overlap. cap 1.0.',
     'finalScore=(content*0.45)+(report*0.25)+(account*0.20)+(rule*0.10). Lower score means approveable. Higher score means rejectable.',
     'Reasons generation constraints:',

@@ -201,6 +201,11 @@ export const isSiqPostId = async (
   return ids.includes(postId);
 };
 
+export const readSiqPostIds = async (subredditId: string): Promise<string[]> => {
+  const raw = await redis.get(siqPostsKey(subredditId));
+  return parseJsonList<string>(raw ?? null);
+};
+
 export const readScoreRecord = async (
   subredditId: string,
   postId: string
@@ -457,7 +462,12 @@ export const incrementActionStats = async (
   action: 'approve' | 'remove'
 ): Promise<void> => {
   const suffix = action === 'approve' ? 'approved_today' : 'removed_today';
-  await redis.incrBy(statsKey(subredditId, suffix), 1);
+  const globalKey = action === 'approve' ? 'stats:approved' : 'stats:removed';
+  await Promise.all([
+    redis.incrBy(statsKey(subredditId, suffix), 1),
+    redis.incrBy('stats:processed', 1),
+    redis.incrBy(globalKey, 1),
+  ]);
 };
 
 export const readSummaryStats = async (subredditId: string): Promise<SummaryStats> => {

@@ -32,7 +32,7 @@ const toScorePayload = (
     title: typeof post.title === 'string' ? post.title : '(untitled)',
     body: typeof post.selftext === 'string' ? (post.selftext as string) : '',
     authorName,
-    accountAgeDays: 365,
+    accountAgeDays: 0,
     karma: typeof author?.karma === 'number' ? author.karma : 0,
     reportCount:
       typeof reportCountOverride === 'number'

@@ -87,7 +87,7 @@ export const App = () => {
     setLoadingQueue(true);
     try {
       const response = await sendQueueMessage();
-      setQueuePosts(response.posts.filter((p) => !p.title.includes('Smart Intelligent Queue Dashboard')));
+      setQueuePosts(response.posts);
       setSelectedIds(new Set());
     } catch {
       setQueuePosts([]);
@@ -179,8 +179,7 @@ export const App = () => {
         return;
       }
       const sorted = [...res.entries].sort((a, b) => b.timestamp - a.timestamp);
-      const filtered = sorted.filter((e) => !e.postTitle.includes('Smart Intelligent Queue Dashboard'));
-      const mapped = filtered.map((entry) => ({
+      const mapped = sorted.map((entry) => ({
         postId: entry.postId,
         ts: new Date(entry.timestamp).toLocaleString('en-US', { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
         mod: entry.modId.startsWith('u/') ? entry.modId : `u/${entry.modId}`,

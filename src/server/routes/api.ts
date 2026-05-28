@@ -26,6 +26,7 @@ import {
   readScoreRecord,
   readSummaryStats,
   readRules,
+  readSiqPostIds,
   removeBannedUser,
   removeBannedUserSignals,
   seedBannedUserCorpus,
@@ -219,7 +220,8 @@ api.get('/queue', async (c) => {
       };
     })
   );
-  const filtered = posts.filter((p) => !p.title.includes('Smart Intelligent Queue Dashboard'));
+  const siqIds = new Set(await readSiqPostIds(subredditId));
+  const filtered = posts.filter((p) => !siqIds.has(p.id));
   filtered.sort((a, b) => b.score - a.score);
   await redis.set(keyQueueLength, String(filtered.length));
   return c.json({ type: 'QUEUE_POSTS_RESPONSE', posts: filtered });
@@ -277,10 +279,6 @@ api.post('/escalated-action', async (c) => {
   if (!result.success) {
     return c.json(result, 500);
   }
-  await Promise.all([
-    redis.incrBy(keyProcessed, 1),
-    redis.incrBy(body.action === 'remove' ? keyRemoved : keyApproved, 1),
-  ]);
   return c.json({ success: true });
 });
 
@@ -300,7 +298,8 @@ api.get('/stats', async (c) => {
     ]);
 
   const queue = await readQueueItems(subredditId, 200, 0);
-  const filteredCount = queue.filter((item) => !item.title.includes('Smart Intelligent Queue Dashboard')).length;
+  const siqIds = new Set(await readSiqPostIds(subredditId));
+  const filteredCount = queue.filter((item) => !siqIds.has(item.postId)).length;
 
   const parsed = (value: string | null, fallback: number): number => {
     const n = Number.parseInt(value ?? '', 10);
@@ -389,11 +388,6 @@ api.post('/mod-action', async (c) => {
     await redis.set(authorKey, JSON.stringify(history.slice(0, 50)));
   }
 
-  await Promise.all([
-    redis.incrBy(keyProcessed, 1),
-    redis.incrBy(body.action === 'remove' ? keyRemoved : keyApproved, 1),
-  ]);
-
   return c.json({ success: true });
 });
 
@@ -438,13 +432,6 @@ api.post('/bulk-action', async (c) => {
     if (result.success) {
       updated += 1;
     }
-  }
-
-  if (updated > 0) {
-    await Promise.all([
-      redis.incrBy(keyProcessed, updated),
-      redis.incrBy(body.action === 'remove' ? keyRemoved : keyApproved, updated),
-    ]);
   }
 
   return c.json({ success: true, updated });

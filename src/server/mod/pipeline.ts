@@ -77,7 +77,7 @@ const detectBannedUserMatch = async (
   for (const signal of signals) {
     // Defensive self-match guard: if a banned user re-registers under the
     // same name, do not flag their own signals.
-    if (signal.bannedUserName === payload.authorName) continue;
+    if (signal.bannedUserName.toLowerCase() === payload.authorName.toLowerCase()) continue;
     const sim = jaccardSimilarity(fingerprint, signal.fingerprint);
     if (!best || sim > best.sim) {
       best = { sim, signal };
@@ -115,7 +115,7 @@ const detectBanEvasion = async (
 
   let best: { sim: number; signal: typeof signals[number] } | undefined;
   for (const signal of signals) {
-    if (signal.authorName === payload.authorName) continue;
+    if (signal.authorName.toLowerCase() === payload.authorName.toLowerCase()) continue;
     const sim = jaccardSimilarity(fingerprint, signal.fingerprint);
     if (!best || sim > best.sim) {
       best = { sim, signal };
