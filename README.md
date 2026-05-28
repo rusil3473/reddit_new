@@ -163,13 +163,5 @@ Commands:
 - Learning signals are currently global and not namespaced per subreddit.
 - Per-author history is stored but not yet used for enforcement decisions.
 
-## Recommended Next Steps
-1. Move Gemini credentials fully to secrets/env.
-2. Add integration tests for moderator access enforcement.
-3. Add regression tests for scoring and deterministic scam overrides.
-4. Scale audit storage from JSON list to sorted structure.
-5. Namespace learning signals per subreddit.
-6. Build anti-abuse features using author action history.
-
 ## Reference
 - Devvit docs: https://developers.reddit.com/docs/llms.txt
